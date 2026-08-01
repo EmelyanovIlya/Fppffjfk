@@ -88,6 +88,9 @@ export function buildInstructions(result: ClickerResult, options: ClickerOptions
     report.pinRing !== null
       ? `- Штифты: ${report.pinPositions.length} шт. ⌀${options.pins.diameter} мм на радиусе ≈${mm(report.pinRing)}, посадка ${options.pins.fit} мм`
       : '- Штифты не поставлены — половины нужно склеить или стянуть иначе.',
+    report.buttonLift !== null
+      ? `- Кнопка выступает над поверхностью на ${mm(report.buttonLift)} — это её ход, так и должно быть`
+      : '',
     report.restGap > 0.05
       ? `- Крышка садится с зазором ${mm(report.restGap)} — это и есть ход нажатия, так и должно быть`
       : '',

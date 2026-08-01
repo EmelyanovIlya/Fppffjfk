@@ -330,10 +330,41 @@ async function verifyPlateMount(): Promise<void> {
     'вокруг выборки в крышке остался материал',
   );
 
-  check(button !== undefined, 'толкатель сгенерирован отдельной деталью');
+  check(button !== undefined, 'кнопка сгенерирована отдельной деталью');
   if (button) {
     const height = button.geometry.boundingBox!.max.z - button.geometry.boundingBox!.min.z;
-    check(height > plate.topHeight, 'толкатель достаёт до штока свича', `длина ${height.toFixed(1)} мм`);
+    check(height > plate.topHeight, 'кнопка достаёт до штока свича', `длина ${height.toFixed(1)} мм`);
+
+    // Гнездо обязано быть крестом, а не круглой дыркой: именно крест держит
+    // кнопку на штоке. Щупаем плечи и углы между ними.
+    const s = plate.stem;
+    const buttonGrid = buildRayGrid(button.geometry, 'z', 192);
+    const z0 = button.geometry.boundingBox!.min.z;
+    const level = z0 + s.height / 2;
+    const solidB = (u: number, v: number) => {
+      const index = cellIndexAt(buttonGrid, u, v);
+      return index >= 0 && isSolidAt(buttonGrid, index, level);
+    };
+
+    check(!solidB(0, 0), 'по центру кнопки прорезано гнездо');
+    check(!solidB(s.length / 2 - 0.5, 0), 'плечо креста вдоль U прорезано');
+    check(!solidB(0, s.length / 2 - 0.5), 'плечо креста вдоль V прорезано');
+    check(
+      solidB(s.width / 2 + 0.4, s.width / 2 + 0.4),
+      'между плечами креста остался материал — гнездо не круглое',
+    );
+    check(
+      solidB(s.length / 2 + 0.4, 0),
+      'стенка трубки за плечом креста на месте',
+      `проба на ${(s.length / 2 + 0.4).toFixed(1)} мм при радиусе трубки ${(s.tube / 2).toFixed(1)} мм`,
+    );
+
+    // Шляпка шире канала: если она ляжет на модель, нажимать будет некуда.
+    check(
+      result.report.buttonLift !== null && result.report.buttonLift >= mechanism.plunger.travel,
+      'шляпка поднята над поверхностью на полный ход',
+      `${(result.report.buttonLift ?? 0).toFixed(1)} мм при ходе ${mechanism.plunger.travel} мм`,
+    );
   }
 
   for (const part of result.parts) {

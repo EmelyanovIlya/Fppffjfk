@@ -579,26 +579,82 @@ export async function generateClicker(
     },
   ];
 
+  let buttonLift: number | null = null;
+
   if (options.makeButton && options.plungerMode === 'through') {
-    // Шток идёт от верхней поверхности модели вниз до штока механизма,
-    // с поправкой на выборку под корпус свича в крышке.
-    const topThickness = solidDepthAbove(grid, section.center.index, wSplit) - capRecess;
-    const shaftLength = topThickness + mechanism.plunger.engage;
+    const outerThickness = solidDepthAbove(grid, section.center.index, wSplit);
     const shaftRadius = Math.max(0.8, plungerRadius - options.pins.fit / 2);
     const headRadius = shaftRadius + 1.8;
     const headHeight = 2;
+    // Шляпка шире канала, поэтому при нажатии упрётся в модель. Приподнимаем её
+    // над поверхностью на полный ход плюс запас — иначе кнопку некуда нажимать.
+    const headLift = mechanism.plunger.travel + 0.4;
 
-    const shaft = cylinderSolid(axis, shaftRadius, shaftLength, 0, 0, shaftLength / 2, { segments: 40 });
-    const head = cylinderSolid(axis, headRadius, headHeight, 0, 0, shaftLength + headHeight / 2 - 0.01, {
-      radiusTop: headRadius - 0.6,
-      segments: 40,
-    });
-    const button = mergeAll([shaft, head])!;
+    let button: BufferGeometry;
+    buttonLift = headLift;
+
+    if (mechanism.cavity.shape === 'plate') {
+      // Колпачок клавиши: снизу трубка с крестообразным гнездом. Крест держит
+      // кнопку на штоке — иначе пружина свича вытолкнет её из канала, — а трубка
+      // входит в колодец свича, поэтому кнопка проходит полный ход нажатия.
+      const s = plateOf(mechanism).stem;
+      const socketDepth = s.height;
+      // Трубка длиннее гнезда: этот выступ и не даёт кнопке сесть на корпус свича.
+      const tubeLength = socketDepth + 1;
+      const restBottom = capRecess - clearance + s.height + (tubeLength - socketDepth);
+      const shaftLength = outerThickness - restBottom + headLift;
+
+      if (shaftLength < 1) {
+        warnings.push(
+          `Над свичем всего ${outerThickness.toFixed(1)} мм: кнопке не хватает длины. ` +
+            'Опустите плоскость реза или увеличьте масштаб модели.',
+        );
+      }
+
+      const body = Math.max(1, shaftLength);
+      const tube = cylinderSolid(axis, s.tube / 2, tubeLength, 0, 0, tubeLength / 2, { segments: 32 });
+      const shaft = cylinderSolid(axis, shaftRadius, body, 0, 0, tubeLength + body / 2, { segments: 40 });
+      const head = cylinderSolid(axis, headRadius, headHeight, 0, 0, tubeLength + body + headHeight / 2, {
+        radiusTop: headRadius - 0.6,
+        segments: 40,
+      });
+
+      let brush = new Brush(tube);
+      brush.updateMatrixWorld();
+      brush = csg(brush, shaft, ADDITION);
+      brush = csg(brush, head, ADDITION);
+      await nextFrame();
+
+      // Гнездо-крест: два скрещённых паза от торца трубки вверх.
+      const armLong = s.length + s.fit;
+      const armShort = s.width + s.fit;
+      const cross = mergeAll([
+        boxSolid(axis, armLong, armShort, socketDepth + OVERSHOOT, 0, 0, socketDepth / 2 - OVERSHOOT / 2),
+        boxSolid(axis, armShort, armLong, socketDepth + OVERSHOOT, 0, 0, socketDepth / 2 - OVERSHOOT / 2),
+      ])!;
+      brush = csg(brush, cross, SUBTRACTION);
+      await nextFrame();
+
+      button = brush.geometry;
+    } else {
+      // Кнопка стоит на толкателе механизма, торчащем над резом на engage.
+      const shaftLength = outerThickness - mechanism.plunger.engage + headLift;
+      const shaft = cylinderSolid(axis, shaftRadius, shaftLength, 0, 0, shaftLength / 2, { segments: 40 });
+      const head = cylinderSolid(axis, headRadius, headHeight, 0, 0, shaftLength + headHeight / 2 - 0.01, {
+        radiusTop: headRadius - 0.6,
+        segments: 40,
+      });
+      button = mergeAll([shaft, head])!;
+    }
+
     button.computeBoundingBox();
 
     parts.push({
       id: 'button',
-      name: 'Толкатель (печатная кнопка)',
+      name:
+        mechanism.cavity.shape === 'plate'
+          ? 'Кнопка на шток свича (с крестовиной)'
+          : 'Толкатель (печатная кнопка)',
       fileName: 'clicker-button.stl',
       geometry: button,
       volume: computeMeshVolume(button),
@@ -630,6 +686,7 @@ export async function generateClicker(
       requiredRadius,
       pinRing,
       restGap,
+      buttonLift,
       pinPositions: pinSlots,
       magnetPositions: magnetSlots,
       mechanism,

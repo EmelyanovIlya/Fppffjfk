@@ -22,6 +22,7 @@ export const MECHANISMS: Mechanism[] = [
       topHeight: 6.6,
       bodyDepth: 5,
       pinDepth: 4,
+      stem: { length: 4.1, width: 1.4, height: 3.6, tube: 5.4, fit: 0.1 },
     },
     // Шток выступает над корпусом свича и утапливается на полный ход MX.
     plunger: { diameter: 8, travel: 4, engage: 3.5 },
