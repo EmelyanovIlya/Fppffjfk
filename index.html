@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Генератор кликеров — 3D-модель в разъёмный корпус с механизмом щелчка</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🖱️</text></svg>" />
+  </head>
+  <body>
+    <div class="app">
+      <aside class="panel">
+        <header class="panel__header">
+          <h1>Генератор кликеров</h1>
+          <p>Модель → две половины с полостью под механизм щелчка</p>
+        </header>
+
+        <section class="block">
+          <h2>1. Модель</h2>
+          <div class="drop" id="drop">
+            <input type="file" id="file" accept=".stl,.obj,.ply,.3mf,.glb,.gltf" hidden />
+            <strong>Перетащите файл сюда</strong>
+            <span>или нажмите для выбора</span>
+            <em>STL · OBJ · PLY · 3MF · GLB · GLTF</em>
+          </div>
+          <dl class="facts" id="model-facts" hidden>
+            <div><dt>Файл</dt><dd id="model-name">—</dd></div>
+            <div><dt>Полигонов</dt><dd id="model-tris">—</dd></div>
+            <div><dt>Габариты</dt><dd id="model-size">—</dd></div>
+          </dl>
+          <label class="field">
+            <span>Масштаб модели</span>
+            <input type="number" id="scale" value="1" min="0.001" max="1000" step="0.01" />
+          </label>
+          <div class="row">
+            <button class="btn btn--ghost" id="scale-fit" type="button">Подогнать под механизм</button>
+            <button class="btn btn--ghost" id="scale-reset" type="button">×1</button>
+          </div>
+          <p class="hint">Модель считается заданной в миллиметрах. Если она в сантиметрах — масштаб 10, в дюймах — 25.4.</p>
+        </section>
+
+        <section class="block">
+          <h2>2. Механизм щелчка</h2>
+          <label class="field">
+            <span>Что вставляем внутрь</span>
+            <select id="mech"></select>
+          </label>
+          <p class="hint" id="mech-hint"></p>
+
+          <div id="custom-dims" hidden>
+            <label class="field">
+              <span>Форма кармана</span>
+              <select id="cav-shape">
+                <option value="box">Прямоугольный</option>
+                <option value="cylinder">Круглый</option>
+              </select>
+            </label>
+            <div class="grid2" id="cav-box">
+              <label class="field"><span>Ширина, мм</span><input type="number" id="cav-w" value="15" min="1" step="0.1" /></label>
+              <label class="field"><span>Глубина, мм</span><input type="number" id="cav-d" value="15" min="1" step="0.1" /></label>
+            </div>
+            <label class="field" id="cav-cyl" hidden><span>Диаметр, мм</span><input type="number" id="cav-dia" value="12" min="1" step="0.1" /></label>
+            <div class="grid2">
+              <label class="field"><span>Высота, мм</span><input type="number" id="cav-h" value="8" min="1" step="0.1" /></label>
+              <label class="field"><span>Стенка, мм</span><input type="number" id="cav-wall" value="1.6" min="0.4" step="0.1" /></label>
+            </div>
+            <div class="grid2">
+              <label class="field"><span>Толкатель ⌀, мм</span><input type="number" id="plg-dia" value="7" min="0.5" step="0.1" /></label>
+              <label class="field"><span>Ход, мм</span><input type="number" id="plg-travel" value="1" min="0" step="0.1" /></label>
+            </div>
+            <label class="field"><span>Заход толкателя в крышку, мм</span><input type="number" id="plg-engage" value="3" min="0" step="0.1" /></label>
+            <label class="check"><input type="checkbox" id="cav-wires" /><span>Канал для проводов наружу</span></label>
+          </div>
+
+          <div class="grid2">
+            <label class="field"><span>Зазор, мм</span><input type="number" id="clearance" value="0.3" min="0" max="2" step="0.05" /></label>
+            <label class="field"><span>Дно под карманом, мм</span><input type="number" id="floor" value="1.6" min="0.4" step="0.1" /></label>
+          </div>
+        </section>
+
+        <section class="block">
+          <h2>3. Рез</h2>
+          <label class="field">
+            <span>Ось нажатия</span>
+            <select id="axis">
+              <option value="z" selected>Z — вверх</option>
+              <option value="y">Y</option>
+              <option value="x">X</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Положение реза <b id="split-value">35%</b></span>
+            <input type="range" id="split" min="3" max="97" value="35" step="1" />
+          </label>
+          <button class="btn btn--ghost" id="split-auto" type="button">Подобрать автоматически</button>
+          <p class="hint" id="section-info">Загрузите модель, чтобы увидеть анализ сечения.</p>
+          <div class="grid2">
+            <label class="field"><span>Сдвиг механизма U, мм</span><input type="number" id="offset-u" value="0" step="0.5" /></label>
+            <label class="field"><span>Сдвиг механизма V, мм</span><input type="number" id="offset-v" value="0" step="0.5" /></label>
+          </div>
+        </section>
+
+        <section class="block">
+          <h2>4. Соединение половин</h2>
+          <label class="check"><input type="checkbox" id="pins-enabled" checked /><span>Штифты совмещения</span></label>
+          <div class="grid2">
+            <label class="field"><span>Количество</span><input type="number" id="pins-count" value="3" min="1" max="8" step="1" /></label>
+            <label class="field"><span>Диаметр, мм</span><input type="number" id="pins-dia" value="3" min="1" step="0.1" /></label>
+          </div>
+          <div class="grid2">
+            <label class="field"><span>Высота, мм</span><input type="number" id="pins-height" value="4" min="1" step="0.1" /></label>
+            <label class="field"><span>Посадка, мм</span><input type="number" id="pins-fit" value="0.25" min="0" max="1" step="0.05" /></label>
+          </div>
+
+          <label class="check"><input type="checkbox" id="magnets-enabled" /><span>Карманы под магниты</span></label>
+          <div class="grid2">
+            <label class="field"><span>Количество</span><input type="number" id="magnets-count" value="2" min="1" max="8" step="1" /></label>
+            <label class="field"><span>⌀ × высота, мм</span>
+              <span class="pair">
+                <input type="number" id="magnets-dia" value="5" min="1" step="0.5" />
+                <input type="number" id="magnets-height" value="2" min="0.5" step="0.5" />
+              </span>
+            </label>
+          </div>
+        </section>
+
+        <section class="block">
+          <h2>5. Толкатель</h2>
+          <label class="field">
+            <span>Канал в крышке</span>
+            <select id="plunger-mode">
+              <option value="blind" selected>Глухой — давим на всю крышку</option>
+              <option value="through">Насквозь — торчит кнопка</option>
+              <option value="none">Без канала</option>
+            </select>
+          </label>
+          <label class="field"><span>Мембрана над каналом, мм</span><input type="number" id="membrane" value="1.2" min="0.4" step="0.1" /></label>
+          <label class="check"><input type="checkbox" id="make-button" /><span>Напечатать отдельную кнопку</span></label>
+          <label class="check"><input type="checkbox" id="print-layout" checked /><span>Разложить детали для печати</span></label>
+          <p class="hint">В 3D модель всегда показывается в сборе — раскладка применяется только к скачиваемым STL.</p>
+        </section>
+
+        <button class="btn btn--primary" id="generate" type="button" disabled>Сделать кликер</button>
+
+        <section class="block" id="results" hidden>
+          <h2>Результат</h2>
+          <ul class="parts" id="parts"></ul>
+          <button class="btn btn--primary" id="export-zip" type="button">Скачать всё архивом</button>
+          <div class="warnings" id="warnings"></div>
+        </section>
+      </aside>
+
+      <main class="viewport" id="viewport">
+        <div class="viewport__tools">
+          <label class="tool">
+            <span>Разнести</span>
+            <input type="range" id="explode" min="0" max="80" value="0" step="1" />
+          </label>
+          <label class="tool tool--check"><input type="checkbox" id="wireframe" /><span>Сетка</span></label>
+          <label class="tool tool--check"><input type="checkbox" id="vis-bottom" checked /><span>Корпус</span></label>
+          <label class="tool tool--check"><input type="checkbox" id="vis-top" checked /><span>Крышка</span></label>
+          <button class="btn btn--ghost btn--sm" id="fit-view" type="button">По центру</button>
+        </div>
+        <div class="status" id="status" hidden><span class="spinner"></span><span id="status-text"></span></div>
+      </main>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
