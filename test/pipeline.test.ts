@@ -15,7 +15,12 @@ import {
 } from '../src/core/analysis';
 import { partToStl } from '../src/core/export';
 import { normalizeModel, sanitizeGeometry } from '../src/core/import';
-import { cavityOuterRadius, getMechanism } from '../src/core/mechanisms';
+import {
+  cavityDepthBelow,
+  cavityOuterRadius,
+  getMechanism,
+  requiredDepthAbove,
+} from '../src/core/mechanisms';
 import { generateClicker } from '../src/core/split';
 import type { ClickerOptions, Mechanism } from '../src/core/types';
 
@@ -53,12 +58,11 @@ function baseOptions(mechanism: Mechanism): ClickerOptions {
 function requirementsFor(options: ClickerOptions): SplitRequirements {
   const m = options.mechanism;
   const footprintRadius = cavityOuterRadius(m, options.clearance);
-  const socket = m.plunger.engage + m.plunger.travel;
   return {
     radius: footprintRadius + m.minWall,
     footprintRadius,
-    depthBelow: m.cavity.height + options.clearance + options.floor,
-    depthAbove: options.plungerMode === 'blind' ? socket + options.membrane : Math.max(socket, m.minWall),
+    depthBelow: cavityDepthBelow(m, options.clearance) + options.floor,
+    depthAbove: requiredDepthAbove(m, options.clearance, options.plungerMode, options.membrane),
   };
 }
 
@@ -151,7 +155,7 @@ async function verifyGeometry(): Promise<void> {
 
   const wSplit = result.report.splitCoord;
   const center = result.report.cavityCenter;
-  const cavityMid = wSplit - (options.mechanism.cavity.height + options.clearance) / 2;
+  const cavityMid = wSplit - cavityDepthBelow(options.mechanism, options.clearance) / 2;
 
   const bottomGrid = buildRayGrid(bottom.geometry, 'z', 128);
   const topGrid = buildRayGrid(top.geometry, 'z', 128);
@@ -169,7 +173,7 @@ async function verifyGeometry(): Promise<void> {
     solidIn(bottomGrid, center.u + cavityRadius + 3, center.v, cavityMid),
     'стенка вокруг кармана осталась на месте',
   );
-  const cavityBottom = wSplit - (options.mechanism.cavity.height + options.clearance);
+  const cavityBottom = wSplit - cavityDepthBelow(options.mechanism, options.clearance);
   check(solidIn(bottomGrid, center.u, center.v, cavityBottom - 0.5), 'под карманом осталось дно');
 
   const pins = result.report.pinPositions;
@@ -251,6 +255,92 @@ function writeSampleSource(): void {
   writeFileSync(`${OUT_DIR}sample-source.stl`, Buffer.from(stl));
 }
 
+/**
+ * Клавиатурный свич держится защёлками за планку с квадратным вырезом.
+ * Проверяем, что планка реально осталась: узкий вырез сверху, широкая
+ * камера под ним, и между ними — кольцо материала.
+ */
+async function verifyPlateMount(): Promise<void> {
+  console.log('\n▸ Посадка клавиатурного свича на планку');
+
+  const mechanism = getMechanism('mx-switch');
+  const plate = mechanism.plate!;
+
+  // Модель должна быть достаточно крупной: свич MX сам по себе высокий.
+  const source = normalizeModel(sanitizeGeometry(new BoxGeometry(44, 44, 40)), 1);
+  const grid = buildRayGrid(source, 'z', 128);
+  const options: ClickerOptions = {
+    ...baseOptions(mechanism),
+    plungerMode: 'through',
+    makeButton: true,
+    printLayout: false,
+  };
+
+  const auto = findBestSplit(grid, requirementsFor(options));
+  check(auto !== null, 'нашлось сечение под свич MX', auto === null ? '' : `${(auto * 100).toFixed(0)}%`);
+  if (auto !== null) options.splitAt = auto;
+
+  const result = await generateClicker(source, grid, options);
+  for (const warning of result.warnings) console.log(`  ⚠ ${warning}`);
+
+  const bottom = result.parts.find((p) => p.id === 'bottom')!;
+  const top = result.parts.find((p) => p.id === 'top')!;
+  const button = result.parts.find((p) => p.id === 'button');
+
+  const wSplit = result.report.splitCoord;
+  const center = result.report.cavityCenter;
+  const bottomGrid = buildRayGrid(bottom.geometry, 'z', 128);
+  const topGrid = buildRayGrid(top.geometry, 'z', 128);
+
+  const solidIn = (g: typeof grid, u: number, v: number, w: number): boolean => {
+    const index = cellIndexAt(g, u, v);
+    return index >= 0 && isSolidAt(g, index, w);
+  };
+
+  // Точка между краем выреза (14/2 = 7) и краем камеры (15.6/2 = 7.8):
+  // на уровне планки там обязан быть материал, ниже — пустота.
+  const ledgeProbe = (plate.aperture / 2 + plate.housing / 2) / 2;
+  const plateLevel = wSplit - plate.thickness / 2;
+  const chamberLevel = wSplit - plate.thickness - plate.bodyDepth / 2;
+
+  check(!solidIn(bottomGrid, center.u, center.v, plateLevel), 'вырез под защёлки прорезан насквозь');
+  check(
+    solidIn(bottomGrid, center.u + ledgeProbe, center.v, plateLevel),
+    'планка под защёлки осталась',
+    `проба на ${ledgeProbe.toFixed(1)} мм от центра`,
+  );
+  check(
+    !solidIn(bottomGrid, center.u + ledgeProbe, center.v, chamberLevel),
+    'под планкой камера шире выреза — защёлкам есть куда выйти',
+  );
+  check(
+    solidIn(bottomGrid, center.u, center.v, wSplit - cavityDepthBelow(mechanism, options.clearance) - 0.5),
+    'под свичем осталось дно',
+  );
+
+  // Верхняя часть корпуса свича уходит в крышку.
+  const recessLevel = wSplit + plate.topHeight / 2;
+  check(!solidIn(topGrid, center.u, center.v, recessLevel), 'в крышке выбрано место под верх свича');
+  check(
+    !solidIn(topGrid, center.u + plate.housing / 2 - 1, center.v, recessLevel),
+    'выборка в крышке шире корпуса свича',
+  );
+  check(
+    solidIn(topGrid, center.u + plate.housing / 2 + 2, center.v, recessLevel),
+    'вокруг выборки в крышке остался материал',
+  );
+
+  check(button !== undefined, 'толкатель сгенерирован отдельной деталью');
+  if (button) {
+    const height = button.geometry.boundingBox!.max.z - button.geometry.boundingBox!.min.z;
+    check(height > plate.topHeight, 'толкатель достаёт до штока свича', `длина ${height.toFixed(1)} мм`);
+  }
+
+  for (const part of result.parts) {
+    writeFileSync(`${OUT_DIR}mx-${part.id}.stl`, Buffer.from(partToStl(part)));
+  }
+}
+
 async function main(): Promise<void> {
   mkdirSync(OUT_DIR, { recursive: true });
   writeSampleSource();
@@ -287,6 +377,7 @@ async function main(): Promise<void> {
   await runCase('Шар по оси X', new SphereGeometry(25, 48, 32), 1, { axis: 'x' });
 
   await verifyGeometry();
+  await verifyPlateMount();
 
   console.log(
     failures === 0 ? '\n✅ Все проверки пройдены' : `\n❌ Проверок не пройдено: ${failures}`,

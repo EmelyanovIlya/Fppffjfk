@@ -17,7 +17,14 @@ import {
   type RayGrid,
   type SectionAnalysis,
 } from './analysis';
-import { cavityFootprint, cavityOuterRadius, distanceToCavity } from './mechanisms';
+import {
+  capRecessHeight,
+  cavityDepthBelow,
+  cavityFootprint,
+  cavityOuterRadius,
+  distanceToCavity,
+  plateOf,
+} from './mechanisms';
 import { boxSolid, cylinderSolid, halfSpaceSolid } from './solids';
 import type { ClickerOptions, ClickerResult, GeneratedPart } from './types';
 
@@ -228,7 +235,9 @@ export async function generateClicker(
     );
   }
 
-  const cavityHeight = mechanism.cavity.height + clearance;
+  const cavityHeight = cavityDepthBelow(mechanism, clearance);
+  const capRecess = capRecessHeight(mechanism, clearance);
+
   const availableDepth = depthUnderFootprint(grid, wSplit, center, outerRadius);
   if (availableDepth < cavityHeight + options.floor) {
     warnings.push(
@@ -236,6 +245,16 @@ export async function generateClicker(
         `а нужно ${(cavityHeight + options.floor).toFixed(1)} мм (карман + дно). ` +
         'Поднимите плоскость реза или увеличьте масштаб.',
     );
+  }
+
+  if (capRecess > 0) {
+    const availableAbove = solidDepthAbove(grid, section.center.index, wSplit);
+    if (availableAbove < capRecess + mechanism.minWall) {
+      warnings.push(
+        `Над резом всего ${availableAbove.toFixed(1)} мм материала, а верхняя часть свича ` +
+          `займёт в крышке ${capRecess.toFixed(1)} мм. Опустите плоскость реза или увеличьте масштаб.`,
+      );
+    }
   }
 
   // ---- Рез на две половины -------------------------------------------------
@@ -258,16 +277,65 @@ export async function generateClicker(
   onProgress('Карман под механизм');
   await nextFrame();
 
-  const cavityCenterW = wSplit + OVERSHOOT / 2 - cavityHeight / 2;
-  const cavity =
-    mechanism.cavity.shape === 'cylinder'
-      ? cylinderSolid(axis, footprint.u / 2, cavityHeight + OVERSHOOT, center.u, center.v, cavityCenterW, {
-          segments: 48,
-        })
-      : boxSolid(axis, footprint.u, footprint.v, cavityHeight + OVERSHOOT, center.u, center.v, cavityCenterW);
+  if (mechanism.cavity.shape === 'plate') {
+    // Ступенчатая посадка: сверху узкий вырез под защёлки, ниже — широкая
+    // камера под корпус. Между ними остаётся планка, за которую свич цепляется.
+    const p = plateOf(mechanism);
+    const aperture = p.aperture + clearance * 2;
 
-  bottom = csg(bottom, cavity, SUBTRACTION);
-  await nextFrame();
+    const apertureDepth = p.thickness;
+    const chamberDepth = cavityHeight - apertureDepth;
+
+    const apertureCut = boxSolid(
+      axis,
+      aperture,
+      aperture,
+      apertureDepth + OVERSHOOT,
+      center.u,
+      center.v,
+      wSplit + OVERSHOOT / 2 - apertureDepth / 2,
+    );
+    const chamberCut = boxSolid(
+      axis,
+      footprint.u,
+      footprint.v,
+      chamberDepth + OVERSHOOT,
+      center.u,
+      center.v,
+      wSplit - apertureDepth - chamberDepth / 2 + OVERSHOOT / 2,
+    );
+
+    bottom = csg(bottom, apertureCut, SUBTRACTION);
+    await nextFrame();
+    bottom = csg(bottom, chamberCut, SUBTRACTION);
+    await nextFrame();
+  } else {
+    const cavityCenterW = wSplit + OVERSHOOT / 2 - cavityHeight / 2;
+    const cavity =
+      mechanism.cavity.shape === 'cylinder'
+        ? cylinderSolid(axis, footprint.u / 2, cavityHeight + OVERSHOOT, center.u, center.v, cavityCenterW, {
+            segments: 48,
+          })
+        : boxSolid(axis, footprint.u, footprint.v, cavityHeight + OVERSHOOT, center.u, center.v, cavityCenterW);
+
+    bottom = csg(bottom, cavity, SUBTRACTION);
+    await nextFrame();
+  }
+
+  // Верхняя часть корпуса свича уходит в крышку — освобождаем ей место.
+  if (capRecess > 0) {
+    const recessCut = boxSolid(
+      axis,
+      footprint.u,
+      footprint.v,
+      capRecess + OVERSHOOT,
+      center.u,
+      center.v,
+      wSplit - OVERSHOOT / 2 + capRecess / 2,
+    );
+    top = csg(top, recessCut, SUBTRACTION);
+    await nextFrame();
+  }
 
   if (mechanism.wireChannel) {
     const minU = axis === 'x' ? grid.box.min.y : grid.box.min.x;
@@ -280,32 +348,63 @@ export async function generateClicker(
       WIRE_CHANNEL.height,
       center.u - length / 2,
       center.v,
-      wSplit - cavityHeight / 2,
+      // По дну кармана: выводы у всех этих механизмов снизу.
+      wSplit - cavityHeight + WIRE_CHANNEL.height / 2 + 0.2,
     );
     bottom = csg(bottom, channel, SUBTRACTION);
     await nextFrame();
   }
 
   // ---- Канал толкателя в верхней части -------------------------------------
-  const socketDepth = mechanism.plunger.engage + mechanism.plunger.travel;
+  //
+  // В глухом режиме нажимают на саму крышку, поэтому она обязана стоять НА
+  // толкателе с зазором до корпуса — иначе она упрётся в корпус и механизм
+  // не сработает вовсе. Гнездо делается мельче вылета толкателя ровно на
+  // столько, сколько нужно хода.
+  const socketDepth = Math.max(0.6, mechanism.plunger.engage - mechanism.plunger.travel);
+  const restGap = options.plungerMode === 'blind' ? mechanism.plunger.engage - socketDepth : 0;
   const plungerRadius = mechanism.plunger.diameter / 2 + clearance;
+
+  if (options.plungerMode === 'blind' && restGap < mechanism.plunger.travel - 0.05) {
+    warnings.push(
+      `Толкатель выступает всего на ${mechanism.plunger.engage.toFixed(1)} мм, поэтому крышка ` +
+        `сможет пройти ${restGap.toFixed(1)} мм из ${mechanism.plunger.travel.toFixed(1)} мм хода. ` +
+        'Механизм сработает, если ему хватает неполного хода; иначе выберите сквозной канал с кнопкой.',
+    );
+  }
+
+  if (options.plungerMode === 'blind' && options.pins.enabled && options.pins.height < restGap + 1.5) {
+    warnings.push(
+      `Крышка стоит с зазором ${restGap.toFixed(1)} мм, а штифты всего ${options.pins.height} мм — ` +
+        `при нажатии они почти выходят из отверстий. Сделайте штифты выше ${(restGap + 2).toFixed(1)} мм.`,
+    );
+  }
+
+  if (options.plungerMode === 'blind' && mechanism.cavity.shape === 'plate') {
+    warnings.push(
+      'Для клавиатурного свича глухой канал — плохой выбор: крышка встанет с заметным зазором, ' +
+        'а верх свича будет видно. Переключите канал на «Насквозь» и напечатайте кнопку.',
+    );
+  }
 
   if (options.plungerMode !== 'none') {
     onProgress('Канал толкателя');
     await nextFrame();
 
-    const topThickness = solidDepthAbove(grid, section.center.index, wSplit);
+    // Канал начинается там, где кончается выборка под корпус механизма.
+    const channelStart = wSplit + capRecess;
+    const topThickness = solidDepthAbove(grid, section.center.index, wSplit) - capRecess;
     let channelLength: number;
 
     if (options.plungerMode === 'through') {
-      channelLength = grid.wMax - wSplit + 2;
+      channelLength = grid.wMax - channelStart + 2;
     } else {
-      channelLength = Math.min(socketDepth, Math.max(1, topThickness - options.membrane));
+      channelLength = Math.min(socketDepth, Math.max(0.5, topThickness - options.membrane));
       if (topThickness - options.membrane < socketDepth) {
         warnings.push(
-          `Над плоскостью реза только ${topThickness.toFixed(1)} мм материала: ` +
-            `глухой канал толкателя укорочен до ${channelLength.toFixed(1)} мм ` +
-            `(механизму нужно ${socketDepth.toFixed(1)} мм хода). Переключите канал в режим «Насквозь».`,
+          `Над каналом только ${Math.max(0, topThickness).toFixed(1)} мм материала: ` +
+            `гнездо толкателя укорочено до ${channelLength.toFixed(1)} мм ` +
+            `вместо ${socketDepth.toFixed(1)} мм. Переключите канал в режим «Насквозь».`,
         );
       }
     }
@@ -316,7 +415,7 @@ export async function generateClicker(
       channelLength + OVERSHOOT,
       center.u,
       center.v,
-      wSplit - OVERSHOOT / 2 + channelLength / 2,
+      channelStart - OVERSHOOT / 2 + channelLength / 2,
       { segments: 40 },
     );
     top = csg(top, channel, SUBTRACTION);
@@ -329,9 +428,8 @@ export async function generateClicker(
   const featureCount =
     (options.pins.enabled ? options.pins.count : 0) + (options.magnets.enabled ? options.magnets.count : 0);
 
-  // Крышка ходит по штифтам, поэтому отверстия глубже на величину хода.
-  const travelGap = options.plungerMode === 'through' ? 0 : mechanism.plunger.travel;
-  const holeDepth = options.pins.height + travelGap + 0.4;
+  // Крышка ходит по штифтам, поэтому отверстия глубже ровно на её зазор.
+  const holeDepth = options.pins.height + restGap + 0.4;
 
   let pinRing: number | null = null;
   const pinSlots: RingSlot[] = [];
@@ -482,7 +580,9 @@ export async function generateClicker(
   ];
 
   if (options.makeButton && options.plungerMode === 'through') {
-    const topThickness = solidDepthAbove(grid, section.center.index, wSplit);
+    // Шток идёт от верхней поверхности модели вниз до штока механизма,
+    // с поправкой на выборку под корпус свича в крышке.
+    const topThickness = solidDepthAbove(grid, section.center.index, wSplit) - capRecess;
     const shaftLength = topThickness + mechanism.plunger.engage;
     const shaftRadius = Math.max(0.8, plungerRadius - options.pins.fit / 2);
     const headRadius = shaftRadius + 1.8;
@@ -529,6 +629,7 @@ export async function generateClicker(
       inscribedRadius: availableRadius,
       requiredRadius,
       pinRing,
+      restGap,
       pinPositions: pinSlots,
       magnetPositions: magnetSlots,
       mechanism,

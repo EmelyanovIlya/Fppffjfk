@@ -42,7 +42,24 @@ export function buildInstructions(result: ClickerResult, options: ClickerOptions
   const cavity =
     m.cavity.shape === 'cylinder'
       ? `цилиндр ⌀${m.cavity.diameter} × ${m.cavity.height} мм`
-      : `${m.cavity.width} × ${m.cavity.depth} × ${m.cavity.height} мм`;
+      : m.cavity.shape === 'plate'
+        ? `вырез ${m.plate!.aperture} × ${m.plate!.aperture} мм в планке ${m.plate!.thickness} мм, ` +
+          `камера ${m.plate!.housing} × ${m.plate!.housing} мм`
+        : `${m.cavity.width} × ${m.cavity.depth} × ${m.cavity.height} мм`;
+
+  const mounting =
+    m.cavity.shape === 'plate'
+      ? [
+          '',
+          '## Посадка свича',
+          '',
+          `Свич вставляется **сверху**, со стороны реза: продавите его в вырез ${m.plate!.aperture} × ${m.plate!.aperture} мм,`,
+          `пока защёлки не выйдут под планкой толщиной ${m.plate!.thickness} мм и не щёлкнут.`,
+          `Верхняя часть корпуса (${m.plate!.topHeight} мм) уходит в ответную выборку в крышке —`,
+          'поэтому крышка садится только после того, как свич защёлкнут.',
+          'Клей не нужен: свич держат защёлки.',
+        ]
+      : [];
 
   const lines: string[] = [
     '# Кликер из модели ' + sourceName,
@@ -71,15 +88,21 @@ export function buildInstructions(result: ClickerResult, options: ClickerOptions
     report.pinRing !== null
       ? `- Штифты: ${report.pinPositions.length} шт. ⌀${options.pins.diameter} мм на радиусе ≈${mm(report.pinRing)}, посадка ${options.pins.fit} мм`
       : '- Штифты не поставлены — половины нужно склеить или стянуть иначе.',
+    report.restGap > 0.05
+      ? `- Крышка садится с зазором ${mm(report.restGap)} — это и есть ход нажатия, так и должно быть`
+      : '',
     report.magnetPositions.length > 0
       ? `- Карманы под магниты: ${report.magnetPositions.length} шт. ⌀${options.magnets.diameter} × ${options.magnets.height} мм`
       : '',
+    ...mounting,
     '',
     '## Сборка',
     '',
     '1. Напечатайте детали. Плоскостью реза вниз, без поддержек внутри кармана.',
     '2. Прочистите карман и отверстия под штифты — при необходимости пройдите сверлом.',
-    '3. Вложите механизм в карман корпуса до упора в дно.',
+    m.cavity.shape === 'plate'
+      ? '3. Защёлкните свич в вырез корпуса — до щелчка, без клея.'
+      : '3. Вложите механизм в карман корпуса до упора в дно.',
     m.wireChannel ? '4. Выведите провода через боковой канал.' : '',
     `${m.wireChannel ? 5 : 4}. Наденьте крышку на штифты. Проверьте щелчок: толкатель должен нажимать механизм без заедания.`,
     `${m.wireChannel ? 6 : 5}. Если ход тугой — увеличьте зазор и перегенерируйте; если люфтит — уменьшите посадку штифтов.`,

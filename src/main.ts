@@ -11,7 +11,14 @@ import {
 } from './core/analysis';
 import { downloadArchive, downloadPart } from './core/export';
 import { loadModelFile, normalizeModel } from './core/import';
-import { MECHANISMS, cavityOuterRadius, getMechanism } from './core/mechanisms';
+import {
+  MECHANISMS,
+  cavityDepthBelow,
+  cavityOuterRadius,
+  getMechanism,
+  isSelfRetaining,
+  requiredDepthAbove,
+} from './core/mechanisms';
 import { generateClicker } from './core/split';
 import type { Axis, ClickerOptions, ClickerResult, Mechanism } from './core/types';
 import { bool, button, el, input, num, on, select, setHidden, setText, throttleFrame } from './ui/dom';
@@ -46,7 +53,7 @@ function fillMechanisms(): void {
     option.textContent = mechanism.name;
     node.append(option);
   }
-  node.value = 'dog-clicker';
+  node.value = MECHANISMS[0].id;
 }
 
 function currentMechanism(): Mechanism {
@@ -79,6 +86,13 @@ function syncMechanismUi(): void {
     const cylinder = select('cav-shape').value === 'cylinder';
     setHidden('cav-cyl', !cylinder);
     setHidden('cav-box', cylinder);
+  }
+
+  // Свич на планке работает только со сквозным каналом и отдельной кнопкой:
+  // глухая крышка встала бы с большим зазором и открыла верх свича.
+  if (isSelfRetaining(mechanism)) {
+    select('plunger-mode').value = 'through';
+    input('make-button').checked = true;
   }
 }
 
@@ -146,13 +160,11 @@ function requirements(): SplitRequirements {
   const options = collectOptions();
   const mechanism = options.mechanism;
   const footprintRadius = cavityOuterRadius(mechanism, options.clearance);
-  const socket = mechanism.plunger.engage + mechanism.plunger.travel;
   return {
     radius: footprintRadius + mechanism.minWall,
     footprintRadius,
-    depthBelow: mechanism.cavity.height + options.clearance + options.floor,
-    depthAbove:
-      options.plungerMode === 'blind' ? socket + options.membrane : Math.max(socket, mechanism.minWall),
+    depthBelow: cavityDepthBelow(mechanism, options.clearance) + options.floor,
+    depthAbove: requiredDepthAbove(mechanism, options.clearance, options.plungerMode, options.membrane),
   };
 }
 

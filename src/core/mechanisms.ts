@@ -1,4 +1,4 @@
-import type { Mechanism } from './types';
+import type { Mechanism, PlateMount } from './types';
 
 /**
  * Библиотека готовых механизмов щелчка.
@@ -7,6 +7,27 @@ import type { Mechanism } from './types';
  * поправить размеры в режиме «Свои размеры».
  */
 export const MECHANISMS: Mechanism[] = [
+  {
+    id: 'mx-switch',
+    name: 'Клавиатурный свич Cherry MX',
+    hint:
+      'Обычный свич от механической клавиатуры: Cherry MX и совместимые — Gateron, Kailh, Outemu. ' +
+      'Для щелчка берите синие или зелёные (clicky). Свич защёлкивается в планку с вырезом 14×14 мм, ' +
+      'его верхняя часть уходит в крышку, а на шток давит печатная кнопка.',
+    cavity: { shape: 'plate', height: 0 },
+    plate: {
+      aperture: 14,
+      thickness: 1.5,
+      housing: 15.6,
+      topHeight: 6.6,
+      bodyDepth: 5,
+      pinDepth: 4,
+    },
+    // Шток выступает над корпусом свича и утапливается на полный ход MX.
+    plunger: { diameter: 8, travel: 4, engage: 3.5 },
+    wireChannel: true,
+    minWall: 2,
+  },
   {
     id: 'dog-clicker',
     name: 'Пластина кликера (дрессировочный)',
@@ -89,10 +110,56 @@ export function cavityFootprint(m: Mechanism, clearance: number): { u: number; v
     const d = (m.cavity.diameter ?? 10) + clearance * 2;
     return { u: d, v: d };
   }
+  if (m.cavity.shape === 'plate') {
+    // Самое широкое место посадки — камера под корпус свича.
+    const d = plateOf(m).housing + clearance * 2;
+    return { u: d, v: d };
+  }
   return {
     u: (m.cavity.width ?? 10) + clearance * 2,
     v: (m.cavity.depth ?? 10) + clearance * 2,
   };
+}
+
+export function plateOf(m: Mechanism): PlateMount {
+  if (!m.plate) throw new Error(`У механизма «${m.name}» не заданы размеры планки`);
+  return m.plate;
+}
+
+/**
+ * Глубина выборки под плоскостью реза, без учёта дна.
+ * У посадки на планку это планка + нижняя часть корпуса + место под выводы;
+ * верхняя часть свича сюда не входит — она уходит в крышку.
+ */
+export function cavityDepthBelow(m: Mechanism, clearance: number): number {
+  if (m.cavity.shape === 'plate') {
+    const p = plateOf(m);
+    return p.thickness + p.bodyDepth + p.pinDepth + clearance;
+  }
+  return m.cavity.height + clearance;
+}
+
+/**
+ * Высота выборки в крышке под верхнюю часть механизма.
+ * Ненулевая только у посадки на планку: у остальных механизмов над резом
+ * идёт сразу канал толкателя.
+ */
+export function capRecessHeight(m: Mechanism, clearance: number): number {
+  return m.cavity.shape === 'plate' ? plateOf(m).topHeight + clearance : 0;
+}
+
+/** Сколько материала нужно над резом, чтобы механизм и толкатель поместились. */
+export function requiredDepthAbove(
+  m: Mechanism,
+  clearance: number,
+  plungerMode: 'through' | 'blind' | 'none',
+  membrane: number,
+): number {
+  const socket = m.plunger.engage + m.plunger.travel;
+  const recess = capRecessHeight(m, clearance);
+  if (plungerMode === 'blind') return recess + socket + membrane;
+  if (plungerMode === 'none') return recess + m.minWall;
+  return recess + Math.max(socket, m.minWall);
 }
 
 /**
@@ -103,6 +170,11 @@ export function cavityOuterRadius(m: Mechanism, clearance: number): number {
   const fp = cavityFootprint(m, clearance);
   if (m.cavity.shape === 'cylinder') return fp.u / 2;
   return Math.hypot(fp.u, fp.v) / 2;
+}
+
+/** Механизмы, которые сами держатся в корпусе, не нужно сажать на клей. */
+export function isSelfRetaining(m: Mechanism): boolean {
+  return m.cavity.shape === 'plate';
 }
 
 /**
