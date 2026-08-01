@@ -4,6 +4,7 @@
  */
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { BoxGeometry, BufferGeometry, CapsuleGeometry, SphereGeometry, TorusGeometry } from 'three';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { computeMeshVolume } from 'three-bvh-csg';
 import {
   analyzeSection,
@@ -87,8 +88,12 @@ async function runCase(
 
   // Автоподбор реза должен находить сечение, вмещающее механизм.
   const auto = findBestSplit(grid, requirementsFor(options));
-  check(auto !== null, 'автоподбор реза вернул положение', auto === null ? '' : `${(auto * 100).toFixed(0)}%`);
-  if (auto !== null) options.splitAt = auto;
+  check(
+    auto !== null && auto.satisfied,
+    'автоподбор реза нашёл подходящее сечение',
+    auto === null ? 'сечений нет' : `${(auto.fraction * 100).toFixed(0)}%`,
+  );
+  if (auto !== null) options.splitAt = auto.fraction;
 
   const section = analyzeSection(grid, grid.wMin + (grid.wMax - grid.wMin) * options.splitAt);
   check(section.inscribedRadius > 0, 'сечение реза непустое', `R=${section.inscribedRadius.toFixed(1)} мм`);
@@ -132,6 +137,70 @@ async function runCase(
   check(totalVolume > 0, 'суммарный объём положителен');
 
   for (const warning of result.warnings) console.log(`  ⚠ ${warning}`);
+}
+
+/**
+ * Механизм должен вставать в середину сечения. У вытянутых моделей одинаково
+ * удачных точек целое плато, и брать из него первую попавшуюся нельзя —
+ * карман уедет к краю.
+ */
+async function verifyCentering(): Promise<void> {
+  console.log('\n▸ Центровка механизма в сечении');
+
+  for (const [w, d] of [
+    [60, 30],
+    [30, 60],
+    [40, 40],
+    [70, 24],
+  ] as const) {
+    const source = normalizeModel(sanitizeGeometry(new BoxGeometry(w, d, 40)), 1);
+    const grid = buildRayGrid(source, 'z', 128);
+    const section = analyzeSection(grid, 20);
+    const offset = Math.hypot(section.center.u, section.center.v);
+    check(
+      offset < 1,
+      `коробка ${w}×${d}: механизм по центру`,
+      `смещение ${offset.toFixed(1)} мм`,
+    );
+  }
+}
+
+/**
+ * Сквозной канал должен выходить на первой поверхности над механизмом,
+ * а не сверлить модель до верха габарита вместе со всем, что стоит выше.
+ */
+async function verifyThroughChannel(): Promise<void> {
+  console.log('\n▸ Сквозной канал не прошивает модель насквозь');
+
+  // Плита с башней сверху: канал обязан выйти на крыше плиты, не тронув башню.
+  const slab = sanitizeGeometry(new BoxGeometry(60, 60, 24));
+  const tower = sanitizeGeometry(new BoxGeometry(16, 16, 30));
+  tower.translate(0, 0, 27);
+  const merged = mergeGeometries([slab, tower], false)!;
+  const source = normalizeModel(sanitizeGeometry(merged), 1);
+
+  const grid = buildRayGrid(source, 'z', 128);
+  const options: ClickerOptions = {
+    ...baseOptions(getMechanism('snap-dome')),
+    splitAt: 0.25,
+    plungerMode: 'through',
+    printLayout: false,
+  };
+
+  const result = await generateClicker(source, grid, options);
+  const top = result.parts.find((p) => p.id === 'top')!;
+  const topGrid = buildRayGrid(top.geometry, 'z', 160);
+  const center = result.report.cavityCenter;
+
+  const solidIn = (u: number, v: number, w: number): boolean => {
+    const index = cellIndexAt(topGrid, u, v);
+    return index >= 0 && isSolidAt(topGrid, index, w);
+  };
+
+  // Плита кончается на 24 мм, башня стоит с 12 до 42 мм.
+  check(!solidIn(center.u, center.v, 20), 'канал прорезан в плите над механизмом');
+  check(solidIn(center.u, center.v, 34), 'башня выше плиты осталась целой');
+  check(solidIn(center.u, center.v, 40), 'верх башни не просверлен');
 }
 
 /**
@@ -277,8 +346,12 @@ async function verifyPlateMount(): Promise<void> {
   };
 
   const auto = findBestSplit(grid, requirementsFor(options));
-  check(auto !== null, 'нашлось сечение под свич MX', auto === null ? '' : `${(auto * 100).toFixed(0)}%`);
-  if (auto !== null) options.splitAt = auto;
+  check(
+    auto !== null && auto.satisfied,
+    'нашлось сечение под свич MX',
+    auto === null ? 'сечений нет' : `${(auto.fraction * 100).toFixed(0)}%`,
+  );
+  if (auto !== null) options.splitAt = auto.fraction;
 
   const result = await generateClicker(source, grid, options);
   for (const warning of result.warnings) console.log(`  ⚠ ${warning}`);
@@ -407,6 +480,8 @@ async function main(): Promise<void> {
   // Рез по другой оси.
   await runCase('Шар по оси X', new SphereGeometry(25, 48, 32), 1, { axis: 'x' });
 
+  await verifyCentering();
+  await verifyThroughChannel();
   await verifyGeometry();
   await verifyPlateMount();
 

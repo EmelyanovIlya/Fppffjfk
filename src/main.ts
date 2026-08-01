@@ -6,6 +6,7 @@ import {
   clearanceAt,
   depthUnderFootprint,
   findBestSplit,
+  solidDepthAbove,
   type RayGrid,
   type SplitRequirements,
 } from './core/analysis';
@@ -365,13 +366,20 @@ function autoScale(): void {
   const need = requirements();
 
   const available = clearanceAt(grid, section.dist, section.center.u, section.center.v);
-  const depth = depthUnderFootprint(grid, w, section.center, need.footprintRadius);
-  if (available <= 0 || depth <= 0) {
+  const depthBelow = depthUnderFootprint(grid, w, section.center, need.footprintRadius);
+  const depthAbove = solidDepthAbove(grid, section.center.index, w);
+  if (available <= 0 || depthBelow <= 0) {
     showMessages(['На этой высоте нечего масштабировать — сдвиньте рез.'], true);
     return;
   }
 
-  const factor = Math.max(need.radius / available, need.depthBelow / depth) * 1.08;
+  // Масштаб должен закрыть все три требования, а не только ширину и низ.
+  const factor =
+    Math.max(
+      need.radius / available,
+      need.depthBelow / depthBelow,
+      depthAbove > 0 ? need.depthAbove / depthAbove : 1,
+    ) * 1.08;
   if (factor <= 1) {
     showMessages(['Механизм и так помещается — масштабировать не нужно.']);
     return;
@@ -383,16 +391,45 @@ function autoScale(): void {
 
 function autoSplit(silent = false): void {
   if (!state.grid) return;
-  const fraction = findBestSplit(state.grid, requirements());
-  if (fraction === null) {
+  const need = requirements();
+  const choice = findBestSplit(state.grid, need);
+
+  if (choice === null) {
     if (!silent) {
-      showMessages(['Не нашлось сечения, в которое помещается механизм. Увеличьте масштаб модели.'], true);
+      showMessages(['Не нашлось ни одного сечения — проверьте, что модель не пустая.'], true);
     }
     return;
   }
-  input('split').value = String(Math.round(fraction * 100));
+
+  input('split').value = String(Math.round(choice.fraction * 100));
   updateSectionInfo();
+
+  if (choice.satisfied || silent) return;
+
+  // Молча оставлять заведомо негодный рез нельзя — объясняем, чего не хватило.
+  const s = choice.shortfall!;
+  const problems: string[] = [];
+  if (s.radius < need.radius) {
+    problems.push(`в сечении помещается ⌀${(s.radius * 2).toFixed(1)} мм вместо ⌀${(need.radius * 2).toFixed(1)} мм`);
+  }
+  if (s.depthBelow < need.depthBelow) {
+    problems.push(`под резом ${s.depthBelow.toFixed(1)} мм материала вместо ${need.depthBelow.toFixed(1)} мм`);
+  }
+  if (s.depthAbove < need.depthAbove) {
+    problems.push(`над резом ${s.depthAbove.toFixed(1)} мм вместо ${need.depthAbove.toFixed(1)} мм`);
+  }
+
+  showMessages([
+    `Подходящего сечения нет: ${problems.join(', ')}. Рез поставлен в самое широкое место, ` +
+      'но механизм туда не влезет. Нажмите «Подогнать под механизм» или выберите механизм поменьше.',
+    ...(state.grid && s.depthBelow < 2 ? [HOLLOW_HINT] : []),
+  ], true);
 }
+
+const HOLLOW_HINT =
+  'Материала почти нет по всей высоте — похоже, модель пустая внутри (обычное дело для скачанных ' +
+  'моделей: это оболочка без наполнения). Из неё нельзя вырезать карман. Сделайте модель сплошной ' +
+  'в редакторе или в слайсере перед загрузкой.';
 
 // ------------------------------------------------------------------ старт
 

@@ -198,13 +198,40 @@ export function analyzeSection(grid: RayGrid, w: number): SectionAnalysis {
   const dist = distanceTransform(mask, grid.nu, grid.nv, grid.cell);
 
   let best = 0;
-  let bestIndex = 0;
   let filled = 0;
   for (let i = 0; i < dist.length; i++) {
     if (mask[i]) filled++;
-    if (dist[i] > best) {
-      best = dist[i];
-      bestIndex = i;
+    if (dist[i] > best) best = dist[i];
+  }
+
+  // Одинаково удачных точек обычно целое плато: у вытянутого сечения это
+  // отрезок вдоль длинной стороны. Брать из него первую попавшуюся нельзя —
+  // механизм уедет к краю. Берём точку плато, ближайшую к его середине.
+  const tolerance = Math.max(1e-6, grid.cell * 0.5);
+  let sumU = 0;
+  let sumV = 0;
+  let count = 0;
+  for (let i = 0; i < dist.length; i++) {
+    if (dist[i] < best - tolerance) continue;
+    sumU += i % grid.nu;
+    sumV += Math.floor(i / grid.nu);
+    count++;
+  }
+
+  let bestIndex = 0;
+  if (count > 0) {
+    const midU = sumU / count;
+    const midV = sumV / count;
+    let closest = Infinity;
+    for (let i = 0; i < dist.length; i++) {
+      if (dist[i] < best - tolerance) continue;
+      const du = (i % grid.nu) - midU;
+      const dv = Math.floor(i / grid.nu) - midV;
+      const d = du * du + dv * dv;
+      if (d < closest) {
+        closest = d;
+        bestIndex = i;
+      }
     }
   }
 
@@ -270,14 +297,35 @@ export interface SplitRequirements {
   depthAbove: number;
 }
 
+/** Результат подбора реза. */
+export interface SplitChoice {
+  /** Доля 0..1 вдоль оси. */
+  fraction: number;
+  /** Выполнены ли все требования механизма. */
+  satisfied: boolean;
+  /** Что именно не сошлось, если satisfied === false. */
+  shortfall?: {
+    /** Лучший найденный радиус сечения и лучшая толщина материала. */
+    radius: number;
+    depthBelow: number;
+    depthAbove: number;
+  };
+}
+
 /**
  * Подбирает положение реза: самое низкое сечение, в которое механизм
  * помещается со стенкой и вокруг которого хватает материала.
- * Возвращает долю 0..1 или null, если сечений нет вовсе.
+ *
+ * Если подходящего сечения нет, возвращает самое широкое с пометкой
+ * satisfied === false — молча отдавать заведомо негодный рез нельзя.
  */
-export function findBestSplit(grid: RayGrid, need: SplitRequirements, samples = 40): number | null {
+export function findBestSplit(grid: RayGrid, need: SplitRequirements, samples = 40): SplitChoice | null {
   const height = grid.wMax - grid.wMin;
-  let fallback: { fraction: number; radius: number } | null = null;
+  let fallback:
+    | { fraction: number; score: number; radius: number; depthBelow: number; depthAbove: number }
+    | null = null;
+
+  const ratio = (have: number, want: number) => (want > 0 ? have / want : 1);
 
   for (let i = 1; i < samples; i++) {
     const fraction = i / samples;
@@ -285,15 +333,35 @@ export function findBestSplit(grid: RayGrid, need: SplitRequirements, samples = 
     const section = analyzeSection(grid, w);
     if (section.inscribedRadius <= 0) continue;
 
-    if (!fallback || section.inscribedRadius > fallback.radius) {
-      fallback = { fraction, radius: section.inscribedRadius };
+    const depthBelow = depthUnderFootprint(grid, w, section.center, need.footprintRadius);
+    const depthAbove = solidDepthAbove(grid, section.center.index, w);
+
+    // Запасной вариант выбираем по самому слабому из требований, а не по
+    // ширине сечения: самое широкое место часто у самого дна, где под резом
+    // нет материала, и подогнать масштаб оттуда получается только абсурдным.
+    const score = Math.min(
+      ratio(section.inscribedRadius, need.radius),
+      ratio(depthBelow, need.depthBelow),
+      ratio(depthAbove, need.depthAbove),
+    );
+    if (!fallback || score > fallback.score) {
+      fallback = { fraction, score, radius: section.inscribedRadius, depthBelow, depthAbove };
     }
 
     if (section.inscribedRadius < need.radius) continue;
-    if (depthUnderFootprint(grid, w, section.center, need.footprintRadius) < need.depthBelow) continue;
-    if (solidDepthAbove(grid, section.center.index, w) < need.depthAbove) continue;
-    return fraction;
+    if (depthBelow < need.depthBelow) continue;
+    if (depthAbove < need.depthAbove) continue;
+    return { fraction, satisfied: true };
   }
 
-  return fallback ? fallback.fraction : null;
+  if (!fallback) return null;
+  return {
+    fraction: fallback.fraction,
+    satisfied: false,
+    shortfall: {
+      radius: fallback.radius,
+      depthBelow: fallback.depthBelow,
+      depthAbove: fallback.depthAbove,
+    },
+  };
 }

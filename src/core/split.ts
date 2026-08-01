@@ -245,6 +245,16 @@ export async function generateClicker(
         `а нужно ${(cavityHeight + options.floor).toFixed(1)} мм (карман + дно). ` +
         'Поднимите плоскость реза или увеличьте масштаб.',
     );
+
+    // Под резом есть высота, а материала нет — верный признак пустой оболочки.
+    const spaceBelow = wSplit - grid.wMin;
+    if (spaceBelow > 5 && availableDepth < spaceBelow / 3) {
+      warnings.push(
+        `Под резом ${spaceBelow.toFixed(1)} мм высоты, но материала лишь ${availableDepth.toFixed(1)} мм — ` +
+          'похоже, модель пустая внутри (обычное дело для скачанных моделей). Из оболочки карман не ' +
+          'вырезать: сделайте модель сплошной перед загрузкой.',
+      );
+    }
   }
 
   if (capRecess > 0) {
@@ -397,7 +407,9 @@ export async function generateClicker(
     let channelLength: number;
 
     if (options.plungerMode === 'through') {
-      channelLength = grid.wMax - channelStart + 2;
+      // До первой поверхности над механизмом, а не до верха габарита: иначе
+      // канал прошьёт насквозь всё, что стоит выше — башни, крышу, ручку.
+      channelLength = Math.max(1, topThickness) + OVERSHOOT;
     } else {
       channelLength = Math.min(socketDepth, Math.max(0.5, topThickness - options.membrane));
       if (topThickness - options.membrane < socketDepth) {
