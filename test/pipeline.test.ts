@@ -5,20 +5,24 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { BoxGeometry, BufferGeometry, CapsuleGeometry, SphereGeometry, TorusGeometry } from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import { computeMeshVolume } from 'three-bvh-csg';
+import { ADDITION, Brush, Evaluator, computeMeshVolume } from 'three-bvh-csg';
 import {
   analyzeSection,
   buildRayGrid,
   cellIndexAt,
+  chooseCavityCenter,
   findBestSplit,
+  solidDepthAbove,
   isSolidAt,
   type SplitRequirements,
 } from '../src/core/analysis';
 import { partToStl } from '../src/core/export';
 import { normalizeModel, sanitizeGeometry } from '../src/core/import';
+import { addPlinth } from '../src/core/plinth';
 import {
   cavityDepthBelow,
   cavityOuterRadius,
+  channelRadius,
   getMechanism,
   requiredDepthAbove,
 } from '../src/core/mechanisms';
@@ -64,7 +68,30 @@ function requirementsFor(options: ClickerOptions): SplitRequirements {
     footprintRadius,
     depthBelow: cavityDepthBelow(m, options.clearance) + options.floor,
     depthAbove: requiredDepthAbove(m, options.clearance, options.plungerMode, options.membrane),
+    channelRadius: channelRadius(m, options.clearance),
   };
+}
+
+/**
+ * Настоящее булево объединение для сборки тестовых моделей.
+ *
+ * Просто слить пересекающиеся или касающиеся коробки нельзя: внутренние грани
+ * никуда не денутся, и проверка «внутри модели» по чётности пересечений начнёт
+ * врать — в месте стыка появится мнимая пустота.
+ */
+function union(...pieces: BufferGeometry[]): BufferGeometry {
+  const evaluator = new Evaluator();
+  evaluator.attributes = ['position', 'normal'];
+  evaluator.useGroups = false;
+
+  let brush = new Brush(sanitizeGeometry(pieces[0]));
+  brush.updateMatrixWorld();
+  for (const piece of pieces.slice(1)) {
+    const tool = new Brush(sanitizeGeometry(piece));
+    tool.updateMatrixWorld();
+    brush = evaluator.evaluate(brush, tool, ADDITION);
+  }
+  return sanitizeGeometry(brush.geometry);
 }
 
 function triangleCount(geometry: BufferGeometry): number {
@@ -166,18 +193,85 @@ async function verifyCentering(): Promise<void> {
 }
 
 /**
+ * Механизм нельзя ставить в самое толстое место сечения, если над ним пустота:
+ * каналу толкателя некуда идти. Точка должна уехать туда, где сверху материал.
+ */
+async function verifyCenterUnderMass(): Promise<void> {
+  console.log('\n▸ Механизм встаёт под массивом, а не в пустоту');
+
+  // Площадка с башней сбоку: середина площадки шире, но над ней ничего нет.
+  const plate = new BoxGeometry(70, 70, 9);
+  const tower = new BoxGeometry(26, 26, 44);
+  tower.translate(20, 0, 26);
+  const source = normalizeModel(union(plate, tower), 1);
+
+  const grid = buildRayGrid(source, 'z', 128);
+  const section = analyzeSection(grid, 4.5);
+  // Свичу MX нужно 14+ мм над резом — в 9-мм площадке столько есть только под башней.
+  const need = requirementsFor({ ...baseOptions(getMechanism('mx-switch')), plungerMode: 'through' });
+
+  check(
+    Math.abs(section.center.u) < 2,
+    'самая широкая точка сечения — середина площадки',
+    `u=${section.center.u.toFixed(1)}`,
+  );
+
+  const chosen = chooseCavityCenter(grid, section, need);
+  check(
+    chosen.u > 10,
+    'механизм сдвинут под башню',
+    `u=${chosen.u.toFixed(1)} при башне на u=20`,
+  );
+  check(
+    solidDepthAbove(grid, chosen.index, 4.5) >= need.depthAbove,
+    'над выбранной точкой хватает материала',
+    `${solidDepthAbove(grid, chosen.index, 4.5).toFixed(1)} мм при нужных ${need.depthAbove.toFixed(1)} мм`,
+  );
+}
+
+/** Цоколь должен наращивать низ модели, не меняя её саму. */
+async function verifyPlinth(): Promise<void> {
+  console.log('\n▸ Наращивание основания');
+
+  const source = normalizeModel(sanitizeGeometry(new BoxGeometry(40, 30, 20)), 1);
+  const before = source.boundingBox!.clone();
+  const grown = addPlinth(source, { height: 12, inset: 1 });
+  const after = grown.boundingBox!;
+
+  check(
+    Math.abs(after.max.z - before.max.z - 12) < 0.05,
+    'модель выросла вниз ровно на заданную высоту',
+    `${(after.max.z - before.max.z).toFixed(1)} мм`,
+  );
+  check(Math.abs(after.min.z) < 0.01, 'низ детали остался на нуле');
+
+  const grid = buildRayGrid(grown, 'z', 128);
+  const solidAt = (u: number, v: number, w: number) => {
+    const i = cellIndexAt(grid, u, v);
+    return i >= 0 && isSolidAt(grid, i, w);
+  };
+  check(solidAt(0, 0, 6), 'цоколь сплошной');
+  check(solidAt(0, 0, 18), 'шов с моделью не оставил пустоты');
+  check(!solidAt(19.5, 0, 6), 'цоколь утоплен относительно контура модели');
+  check(solidAt(19.5, 0, 18), 'сама модель по ширине не изменилась');
+}
+
+/**
  * Сквозной канал должен выходить на первой поверхности над механизмом,
  * а не сверлить модель до верха габарита вместе со всем, что стоит выше.
  */
 async function verifyThroughChannel(): Promise<void> {
   console.log('\n▸ Сквозной канал не прошивает модель насквозь');
 
-  // Плита с башней сверху: канал обязан выйти на крыше плиты, не тронув башню.
-  const slab = sanitizeGeometry(new BoxGeometry(60, 60, 24));
-  const tower = sanitizeGeometry(new BoxGeometry(16, 16, 30));
-  tower.translate(0, 0, 27);
-  const merged = mergeGeometries([slab, tower], false)!;
-  const source = normalizeModel(sanitizeGeometry(merged), 1);
+  // Плита, над ней с зазором — козырёк на боковой стойке. Канал обязан выйти
+  // на крыше плиты; если сверлить до верха габарита, он прошьёт и козырёк.
+  const slab = new BoxGeometry(60, 60, 24);
+  slab.translate(0, 0, 12); // 0…24
+  const canopy = new BoxGeometry(60, 60, 8);
+  canopy.translate(0, 0, 36); // 32…40
+  const post = new BoxGeometry(8, 60, 12);
+  post.translate(26, 0, 28); // 22…34, связывает плиту с козырьком
+  const source = normalizeModel(union(slab, canopy, post), 1);
 
   const grid = buildRayGrid(source, 'z', 128);
   const options: ClickerOptions = {
@@ -197,10 +291,9 @@ async function verifyThroughChannel(): Promise<void> {
     return index >= 0 && isSolidAt(topGrid, index, w);
   };
 
-  // Плита кончается на 24 мм, башня стоит с 12 до 42 мм.
+  // Плита 0…24, зазор 24…32, козырёк 32…40.
   check(!solidIn(center.u, center.v, 20), 'канал прорезан в плите над механизмом');
-  check(solidIn(center.u, center.v, 34), 'башня выше плиты осталась целой');
-  check(solidIn(center.u, center.v, 40), 'верх башни не просверлен');
+  check(solidIn(center.u, center.v, 36), 'козырёк над плитой остался целым');
 }
 
 /**
@@ -481,6 +574,8 @@ async function main(): Promise<void> {
   await runCase('Шар по оси X', new SphereGeometry(25, 48, 32), 1, { axis: 'x' });
 
   await verifyCentering();
+  await verifyCenterUnderMass();
+  await verifyPlinth();
   await verifyThroughChannel();
   await verifyGeometry();
   await verifyPlateMount();

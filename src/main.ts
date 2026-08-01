@@ -3,6 +3,7 @@ import './style.css';
 import {
   analyzeSection,
   buildRayGrid,
+  chooseCavityCenter,
   clearanceAt,
   depthUnderFootprint,
   findBestSplit,
@@ -12,10 +13,12 @@ import {
 } from './core/analysis';
 import { downloadArchive, downloadPart } from './core/export';
 import { loadModelFile, normalizeModel } from './core/import';
+import { addPlinth } from './core/plinth';
 import {
   MECHANISMS,
   cavityDepthBelow,
   cavityOuterRadius,
+  channelRadius,
   getMechanism,
   isSelfRetaining,
   requiredDepthAbove,
@@ -166,6 +169,7 @@ function requirements(): SplitRequirements {
     footprintRadius,
     depthBelow: cavityDepthBelow(mechanism, options.clearance) + options.floor,
     depthAbove: requiredDepthAbove(mechanism, options.clearance, options.plungerMode, options.membrane),
+    channelRadius: channelRadius(mechanism, options.clearance),
   };
 }
 
@@ -186,19 +190,22 @@ function updateSectionInfo(): void {
     return;
   }
 
+  const auto = chooseCavityCenter(grid, section, need);
   const center = {
-    u: section.center.u + options.centerOffset.u,
-    v: section.center.v + options.centerOffset.v,
+    u: auto.u + options.centerOffset.u,
+    v: auto.v + options.centerOffset.v,
   };
   const available = clearanceAt(grid, section.dist, center.u, center.v);
   const depth = depthUnderFootprint(grid, w, center, need.footprintRadius);
-  const fits = available >= need.radius && depth >= need.depthBelow;
+  const above = solidDepthAbove(grid, auto.index, w);
+  const fits = available >= need.radius && depth >= need.depthBelow && above >= need.depthAbove;
 
   setText(
     'section-info',
-    `Сечение: помещается ⌀${(available * 2).toFixed(1)} мм, под резом ${depth.toFixed(1)} мм материала. ` +
-      `Механизму нужно ⌀${(need.radius * 2).toFixed(1)} мм и ${need.depthBelow.toFixed(1)} мм. ` +
-      (fits ? '✓ помещается' : '✗ не помещается — увеличьте масштаб или сдвиньте рез'),
+    `Сечение: помещается ⌀${(available * 2).toFixed(1)} мм, под резом ${depth.toFixed(1)} мм, ` +
+      `над резом ${above.toFixed(1)} мм. Механизму нужно ⌀${(need.radius * 2).toFixed(1)} мм, ` +
+      `${need.depthBelow.toFixed(1)} мм и ${need.depthAbove.toFixed(1)} мм. ` +
+      (fits ? '✓ помещается' : '✗ не помещается'),
   );
 }
 
@@ -220,7 +227,10 @@ function rebuildModel(): void {
   requestAnimationFrame(() => {
     try {
       state.normalized?.dispose();
-      state.normalized = normalizeModel(state.source!, num('scale', 1));
+      state.normalized = addPlinth(normalizeModel(state.source!, num('scale', 1)), {
+        height: num('plinth', 0),
+        inset: num('plinth-inset', 0.6),
+      });
       viewer.showSource(state.normalized);
 
       const box = state.normalized.boundingBox!;
@@ -389,6 +399,28 @@ function autoScale(): void {
   rebuildModel();
 }
 
+/**
+ * Наращивает основание ровно настолько, чтобы механизму хватило глубины.
+ * Альтернатива масштабированию: сама модель остаётся прежнего размера.
+ */
+function autoPlinth(): void {
+  if (!state.grid) return;
+  const grid = state.grid;
+  const need = requirements();
+  const w = splitCoord(grid);
+  const section = analyzeSection(grid, w);
+  const depth = depthUnderFootprint(grid, w, section.center, need.footprintRadius);
+
+  const missing = need.depthBelow - depth;
+  if (missing <= 0) {
+    showMessages(['Материала под резом и так хватает — наращивать основание не нужно.']);
+    return;
+  }
+
+  input('plinth').value = (num('plinth', 0) + Math.ceil(missing + 1)).toFixed(1);
+  rebuildModel();
+}
+
 function autoSplit(silent = false): void {
   if (!state.grid) return;
   const need = requirements();
@@ -459,8 +491,12 @@ function bindEvents(): void {
   on('split-auto', 'click', () => autoSplit());
   on('scale', 'change', rebuildModel);
   on('scale-fit', 'click', autoScale);
+  on('plinth', 'change', rebuildModel);
+  on('plinth-inset', 'change', rebuildModel);
+  on('plinth-fit', 'click', autoPlinth);
   on('scale-reset', 'click', () => {
     input('scale').value = '1';
+    input('plinth').value = '0';
     rebuildModel();
   });
 

@@ -11,6 +11,7 @@ import {
 import {
   analyzeSection,
   cellIndexAt,
+  chooseCavityCenter,
   clearanceAt,
   depthUnderFootprint,
   solidDepthAbove,
@@ -20,6 +21,8 @@ import {
 import {
   capRecessHeight,
   cavityDepthBelow,
+  channelRadius,
+  requiredDepthAbove,
   cavityFootprint,
   cavityOuterRadius,
   distanceToCavity,
@@ -217,14 +220,21 @@ export async function generateClicker(
     throw new Error('Плоскость реза не пересекает модель — сдвиньте её ползунком «Положение реза».');
   }
 
-  const center = {
-    u: section.center.u + options.centerOffset.u,
-    v: section.center.v + options.centerOffset.v,
-  };
-
   const footprint = cavityFootprint(mechanism, clearance);
   const outerRadius = cavityOuterRadius(mechanism, clearance);
   const requiredRadius = outerRadius + mechanism.minWall;
+
+  const auto = chooseCavityCenter(grid, section, {
+    radius: requiredRadius,
+    footprintRadius: outerRadius,
+    depthBelow: cavityDepthBelow(mechanism, clearance) + options.floor,
+    depthAbove: requiredDepthAbove(mechanism, clearance, options.plungerMode, options.membrane),
+    channelRadius: channelRadius(mechanism, clearance),
+  });
+  const center = {
+    u: auto.u + options.centerOffset.u,
+    v: auto.v + options.centerOffset.v,
+  };
 
   const availableRadius = clearanceAt(grid, section.dist, center.u, center.v);
   if (availableRadius < requiredRadius) {
@@ -258,7 +268,7 @@ export async function generateClicker(
   }
 
   if (capRecess > 0) {
-    const availableAbove = solidDepthAbove(grid, section.center.index, wSplit);
+    const availableAbove = solidDepthAbove(grid, auto.index, wSplit);
     if (availableAbove < capRecess + mechanism.minWall) {
       warnings.push(
         `Над резом всего ${availableAbove.toFixed(1)} мм материала, а верхняя часть свича ` +
@@ -403,7 +413,7 @@ export async function generateClicker(
 
     // Канал начинается там, где кончается выборка под корпус механизма.
     const channelStart = wSplit + capRecess;
-    const topThickness = solidDepthAbove(grid, section.center.index, wSplit) - capRecess;
+    const topThickness = solidDepthAbove(grid, auto.index, wSplit) - capRecess;
     let channelLength: number;
 
     if (options.plungerMode === 'through') {
@@ -594,7 +604,7 @@ export async function generateClicker(
   let buttonLift: number | null = null;
 
   if (options.makeButton && options.plungerMode === 'through') {
-    const outerThickness = solidDepthAbove(grid, section.center.index, wSplit);
+    const outerThickness = solidDepthAbove(grid, auto.index, wSplit);
     const shaftRadius = Math.max(0.8, plungerRadius - options.pins.fit / 2);
     const headRadius = shaftRadius + 1.8;
     const headHeight = 2;

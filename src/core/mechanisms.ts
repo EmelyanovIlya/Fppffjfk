@@ -149,6 +149,11 @@ export function capRecessHeight(m: Mechanism, clearance: number): number {
   return m.cavity.shape === 'plate' ? plateOf(m).topHeight + clearance : 0;
 }
 
+/** Радиус канала толкателя с учётом зазора. */
+export function channelRadius(m: Mechanism, clearance: number): number {
+  return m.plunger.diameter / 2 + clearance;
+}
+
 /** Сколько материала нужно над резом, чтобы механизм и толкатель поместились. */
 export function requiredDepthAbove(
   m: Mechanism,

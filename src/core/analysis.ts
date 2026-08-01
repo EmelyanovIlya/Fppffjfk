@@ -249,6 +249,66 @@ export function analyzeSection(grid: RayGrid, w: number): SectionAnalysis {
   };
 }
 
+/**
+ * Выбирает точку под механизм.
+ *
+ * Самая «толстая» точка сечения не годится сама по себе: над ней может не быть
+ * материала — у модели здания это, например, двор между корпусами, и каналу
+ * толкателя некуда идти. Поэтому среди точек, куда механизм влезает вширь,
+ * берётся та, над которой больше всего материала, а при равенстве — та, где
+ * запас по ширине больше.
+ */
+export function chooseCavityCenter(
+  grid: RayGrid,
+  section: SectionAnalysis,
+  need: SplitRequirements,
+): { u: number; v: number; index: number } {
+  // Где над сечением достаточно материала на канал толкателя.
+  const roofed = new Uint8Array(section.mask.length);
+  for (let i = 0; i < roofed.length; i++) {
+    roofed[i] = section.mask[i] && solidDepthAbove(grid, i, section.w) >= need.depthAbove ? 1 : 0;
+  }
+
+  // Мало попасть в массив краем: канал должен целиком уйти под него,
+  // иначе он выйдет наружу сбоку. Меряем запас до границы этой области.
+  const roofedDist = distanceTransform(roofed, grid.nu, grid.nv, grid.cell);
+
+  const pick = (fits: (i: number) => boolean, score: (i: number) => number) => {
+    let bestIndex = -1;
+    let best = -Infinity;
+    for (let i = 0; i < section.dist.length; i++) {
+      if (!fits(i)) continue;
+      const value = score(i);
+      if (value > best) {
+        best = value;
+        bestIndex = i;
+      }
+    }
+    return bestIndex;
+  };
+
+  const wide = (i: number) => section.dist[i] >= need.radius;
+  const roofedEnough = (i: number) => roofedDist[i] >= need.channelRadius;
+
+  // Идеальный вариант: механизм влезает вширь и канал целиком под массивом.
+  let index = pick(
+    (i) => wide(i) && roofedEnough(i),
+    (i) => Math.min(section.dist[i] / need.radius, roofedDist[i] / need.channelRadius),
+  );
+
+  // Иначе — хотя бы влезает вширь, а канал ставим где материала над ним больше.
+  if (index < 0) index = pick(wide, (i) => roofedDist[i]);
+
+  // Совсем никак: оставляем середину самого широкого места.
+  if (index < 0) return section.center;
+
+  return {
+    u: grid.originU + (index % grid.nu) * grid.cell,
+    v: grid.originV + Math.floor(index / grid.nu) * grid.cell,
+    index,
+  };
+}
+
 /** Индекс ячейки по координатам сечения; -1, если вне сетки. */
 export function cellIndexAt(grid: RayGrid, u: number, v: number): number {
   const iu = Math.round((u - grid.originU) / grid.cell);
@@ -295,6 +355,8 @@ export interface SplitRequirements {
   depthBelow: number;
   /** Нужная толщина материала над резом (канал толкателя + мембрана). */
   depthAbove: number;
+  /** Радиус канала толкателя — он должен целиком уйти под материал. */
+  channelRadius: number;
 }
 
 /** Результат подбора реза. */
@@ -333,8 +395,9 @@ export function findBestSplit(grid: RayGrid, need: SplitRequirements, samples = 
     const section = analyzeSection(grid, w);
     if (section.inscribedRadius <= 0) continue;
 
-    const depthBelow = depthUnderFootprint(grid, w, section.center, need.footprintRadius);
-    const depthAbove = solidDepthAbove(grid, section.center.index, w);
+    const center = chooseCavityCenter(grid, section, need);
+    const depthBelow = depthUnderFootprint(grid, w, center, need.footprintRadius);
+    const depthAbove = solidDepthAbove(grid, center.index, w);
 
     // Запасной вариант выбираем по самому слабому из требований, а не по
     // ширине сечения: самое широкое место часто у самого дна, где под резом

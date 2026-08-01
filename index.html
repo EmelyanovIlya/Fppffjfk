@@ -36,6 +36,12 @@
             <button class="btn btn--ghost" id="scale-reset" type="button">×1</button>
           </div>
           <p class="hint">Модель считается заданной в миллиметрах. Если она в сантиметрах — масштаб 10, в дюймах — 25.4.</p>
+          <div class="grid2">
+            <label class="field"><span>Нарастить низ, мм</span><input type="number" id="plinth" value="0" min="0" max="100" step="0.5" /></label>
+            <label class="field"><span>Утопить цоколь, мм</span><input type="number" id="plinth-inset" value="0.6" min="0" step="0.2" /></label>
+          </div>
+          <button class="btn btn--ghost" id="plinth-fit" type="button">Нарастить под механизм</button>
+          <p class="hint">Если подставка модели слишком тонкая и механизму некуда уйти вглубь — снизу приваривается цоколь. Сама модель при этом не растягивается.</p>
         </section>
 
         <section class="block">
