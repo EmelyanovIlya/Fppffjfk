@@ -130,7 +130,13 @@ export async function downloadArchive(
   for (const part of result.parts) zip.file(part.fileName, partToStl(part));
   zip.file('СБОРКА.md', buildInstructions(result, options, sourceName));
 
-  const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
+  // Быстрое сжатие: STL с тяжёлой сетки весит десятки мегабайт, и обычный
+  // уровень DEFLATE заставляет браузер считать архив дольше, чем сам кликер.
+  const blob = await zip.generateAsync({
+    type: 'blob',
+    compression: 'DEFLATE',
+    compressionOptions: { level: 1 },
+  });
   const base = sourceName.replace(/\.[^.]+$/, '') || 'clicker';
   triggerDownload(blob, `${base}-clicker.zip`);
 }
