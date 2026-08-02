@@ -10,7 +10,8 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "test": "tsc --noEmit && vite build --ssr test/pipeline.test.ts --outDir .test-build --logLevel warn && node .test-build/pipeline.test.js",
-    "slice": "vite build --ssr test/slice.ts --outDir .test-build --logLevel warn && node .test-build/slice.js"
+    "slice": "vite build --ssr test/slice.ts --outDir .test-build --logLevel warn && node .test-build/slice.js",
+    "decimate": "vite build --ssr test/decimate.ts --outDir .test-build --logLevel warn && node .test-build/decimate.js"
   },
   "dependencies": {
     "jszip": "^3.10.1",
