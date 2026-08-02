@@ -417,7 +417,9 @@ function autoPlinth(): void {
     return;
   }
 
-  input('plinth').value = (num('plinth', 0) + Math.ceil(missing + 1)).toFixed(1);
+  // С запасом: если нарастить впритык, рез встанет ровно на кромку подставки,
+  // где сечение уже сужается до самой модели — и штифтам не останется места.
+  input('plinth').value = (num('plinth', 0) + Math.ceil(missing + 4)).toFixed(1);
   rebuildModel();
 }
 
