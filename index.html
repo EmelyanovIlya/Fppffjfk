@@ -105,7 +105,7 @@
           </div>
         </section>
 
-        <section class="block">
+        <section class="block" id="joint-block">
           <h2>4. Соединение половин</h2>
           <label class="check"><input type="checkbox" id="pins-enabled" checked /><span>Штифты совмещения</span></label>
           <div class="grid2">
@@ -130,7 +130,19 @@
         </section>
 
         <section class="block">
-          <h2>5. Толкатель</h2>
+          <h2>5. Схема сборки</h2>
+          <label class="field">
+            <span>Как держится модель</span>
+            <select id="assembly">
+              <option value="keycap" selected>Модель — колпачок на свиче</option>
+              <option value="bolted">Крышка на штифтах, механизм внутри</option>
+            </select>
+          </label>
+          <p class="hint" id="assembly-hint"></p>
+        </section>
+
+        <section class="block" id="plunger-block">
+          <h2>6. Толкатель</h2>
           <label class="field">
             <span>Канал в крышке</span>
             <select id="plunger-mode">

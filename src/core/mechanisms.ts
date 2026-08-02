@@ -1,4 +1,4 @@
-import type { Mechanism, PlateMount } from './types';
+import type { Assembly, Mechanism, PlateMount } from './types';
 
 /**
  * Библиотека готовых механизмов щелчка.
@@ -149,6 +149,50 @@ export function capRecessHeight(m: Mechanism, clearance: number): number {
   return m.cavity.shape === 'plate' ? plateOf(m).topHeight + clearance : 0;
 }
 
+/**
+ * Размеры колпачка: модель садится прямо на шток свича и ходит вместе с ним.
+ *
+ * Всё считается от нижней грани верхней детали (она же плоскость реза).
+ * Свич остаётся снаружи, между основанием и моделью, поэтому в собранном виде
+ * между ними есть зазор — это и есть ход нажатия.
+ */
+export interface KeycapFit {
+  /** На сколько модель приподнята над основанием в покое. */
+  lift: number;
+  /** Ширина внутренней полости, освобождающей корпус свича. */
+  cavityWidth: number;
+  /** Глубина этой полости от нижней грани модели. */
+  cavityDepth: number;
+  /** Низ и верх гнезда-креста, от нижней грани модели. */
+  socketBottom: number;
+  socketTop: number;
+  /** Сколько материала должно быть над резом: полость плюс стенка. */
+  requiredDepth: number;
+}
+
+export function keycapFit(m: Mechanism, clearance: number): KeycapFit {
+  const p = plateOf(m);
+  const travel = m.plunger.travel;
+
+  // Зазор до основания при полном нажатии — чтобы модель не села на плиту.
+  const lift = travel + 1;
+  const stemTop = p.topHeight + p.stem.height;
+
+  const socketTop = stemTop - lift;
+  const socketBottom = socketTop - p.stem.height;
+  // Полость обязана вместить и корпус свича, поднявшийся при нажатии.
+  const cavityDepth = Math.max(socketTop, p.topHeight - lift + travel) + 0.6;
+
+  return {
+    lift,
+    cavityWidth: p.housing + clearance * 2,
+    cavityDepth,
+    socketBottom,
+    socketTop,
+    requiredDepth: cavityDepth + m.minWall,
+  };
+}
+
 /** Радиус канала толкателя с учётом зазора. */
 export function channelRadius(m: Mechanism, clearance: number): number {
   return m.plunger.diameter / 2 + clearance;
@@ -160,7 +204,13 @@ export function requiredDepthAbove(
   clearance: number,
   plungerMode: 'through' | 'blind' | 'none',
   membrane: number,
+  assembly: Assembly = 'bolted',
 ): number {
+  // Колпачку нужна внутренняя полость под свич, а не канал толкателя.
+  if (assembly === 'keycap' && m.cavity.shape === 'plate') {
+    return keycapFit(m, clearance).requiredDepth;
+  }
+
   const socket = m.plunger.engage + m.plunger.travel;
   const recess = capRecessHeight(m, clearance);
   if (plungerMode === 'blind') return recess + socket + membrane;

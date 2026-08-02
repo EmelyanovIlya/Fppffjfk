@@ -82,6 +82,23 @@ function currentMechanism(): Mechanism {
   return mechanism;
 }
 
+const ASSEMBLY_HINTS: Record<string, string> = {
+  keycap:
+    'Как у брелоков-«свичей»: свич защёлкивается в основание и остаётся снаружи, а модель садится ' +
+    'на его шток крестовиной и ходит вместе с ним. Крепёж не нужен, кнопка — сама модель.',
+  bolted:
+    'Механизм спрятан внутри, половины стянуты штифтами. Нажимают отдельную кнопку или всю крышку.',
+};
+
+/** Колпачок отменяет и толкатель, и крепёж — прячем то, что ни на что не влияет. */
+function syncAssemblyUi(): void {
+  const assembly = select('assembly').value;
+  const keycap = assembly === 'keycap' && isSelfRetaining(getMechanism(select('mech').value));
+  setText('assembly-hint', ASSEMBLY_HINTS[assembly] ?? '');
+  setHidden('plunger-block', keycap);
+  setHidden('joint-block', keycap);
+}
+
 function syncMechanismUi(): void {
   const mechanism = getMechanism(select('mech').value);
   setText('mech-hint', mechanism.hint);
@@ -98,12 +115,14 @@ function syncMechanismUi(): void {
     select('plunger-mode').value = 'through';
     input('make-button').checked = true;
   }
+  syncAssemblyUi();
 }
 
 // ------------------------------------------------------------------ опции
 
 function collectOptions(): ClickerOptions {
   return {
+    assembly: select('assembly').value as ClickerOptions['assembly'],
     axis: select('axis').value as Axis,
     splitAt: num('split', 35) / 100,
     mechanism: currentMechanism(),
@@ -168,7 +187,13 @@ function requirements(): SplitRequirements {
     radius: footprintRadius + mechanism.minWall,
     footprintRadius,
     depthBelow: cavityDepthBelow(mechanism, options.clearance) + options.floor,
-    depthAbove: requiredDepthAbove(mechanism, options.clearance, options.plungerMode, options.membrane),
+    depthAbove: requiredDepthAbove(
+      mechanism,
+      options.clearance,
+      options.plungerMode,
+      options.membrane,
+      options.assembly,
+    ),
     channelRadius: channelRadius(mechanism, options.clearance),
   };
 }
@@ -468,6 +493,10 @@ const HOLLOW_HINT =
 // ------------------------------------------------------------------ старт
 
 function bindEvents(): void {
+  on('assembly', 'change', () => {
+    syncAssemblyUi();
+    updateSectionInfo();
+  });
   on('mech', 'change', () => {
     syncMechanismUi();
     updateSectionInfo();
@@ -516,5 +545,6 @@ function bindEvents(): void {
 
 fillMechanisms();
 syncMechanismUi();
+syncAssemblyUi();
 setupDropZone();
 bindEvents();

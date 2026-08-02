@@ -24,6 +24,7 @@ import {
   cavityOuterRadius,
   channelRadius,
   getMechanism,
+  keycapFit,
   requiredDepthAbove,
 } from '../src/core/mechanisms';
 import { generateClicker } from '../src/core/split';
@@ -44,6 +45,7 @@ function check(condition: boolean, label: string, detail = ''): void {
 
 function baseOptions(mechanism: Mechanism): ClickerOptions {
   return {
+    assembly: 'bolted',
     axis: 'z',
     splitAt: 0.4,
     mechanism,
@@ -67,7 +69,13 @@ function requirementsFor(options: ClickerOptions): SplitRequirements {
     radius: footprintRadius + m.minWall,
     footprintRadius,
     depthBelow: cavityDepthBelow(m, options.clearance) + options.floor,
-    depthAbove: requiredDepthAbove(m, options.clearance, options.plungerMode, options.membrane),
+    depthAbove: requiredDepthAbove(
+      m,
+      options.clearance,
+      options.plungerMode,
+      options.membrane,
+      options.assembly,
+    ),
     channelRadius: channelRadius(m, options.clearance),
   };
 }
@@ -538,6 +546,81 @@ async function verifyPlateMount(): Promise<void> {
   }
 }
 
+/**
+ * Схема «модель — колпачок»: свич защёлкнут в основание и остаётся снаружи,
+ * а модель садится на его шток и ходит вместе с ним.
+ */
+async function verifyKeycapAssembly(): Promise<void> {
+  console.log('\n▸ Сборка «модель — колпачок»');
+
+  const mechanism = getMechanism('mx-switch');
+  const plate = mechanism.plate!;
+  const fit = keycapFit(mechanism, 0.3);
+
+  const source = normalizeModel(sanitizeGeometry(new BoxGeometry(46, 46, 44)), 1);
+  const grid = buildRayGrid(source, 'z', 128);
+  const options: ClickerOptions = { ...baseOptions(mechanism), assembly: 'keycap', printLayout: false };
+
+  const auto = findBestSplit(grid, requirementsFor(options));
+  check(auto !== null && auto.satisfied, 'сечение под колпачок найдено');
+  if (auto !== null) options.splitAt = auto.fraction;
+
+  const result = await generateClicker(source, grid, options);
+  for (const warning of result.warnings) console.log(`  ⚠ ${warning}`);
+
+  const base = result.parts.find((p) => p.id === 'bottom')!;
+  const cap = result.parts.find((p) => p.id === 'top')!;
+
+  check(result.parts.length === 2, 'деталей ровно две — кнопка не нужна', `${result.parts.length}`);
+  check(result.report.pinPositions.length === 0, 'штифтов нет — модель держит крестовина');
+  check(
+    Math.abs(result.report.restGap - fit.lift) < 0.01,
+    'зазор между деталями равен ходу нажатия',
+    `${result.report.restGap.toFixed(1)} мм при ходе ${mechanism.plunger.travel} мм`,
+  );
+
+  const wSplit = result.report.splitCoord;
+  const center = result.report.cavityCenter;
+  const baseGrid = buildRayGrid(base.geometry, 'z', 160);
+  const capGrid = buildRayGrid(cap.geometry, 'z', 200);
+  const solidIn = (g: typeof grid, u: number, v: number, w: number) => {
+    const i = cellIndexAt(g, u, v);
+    return i >= 0 && isSolidAt(g, i, w);
+  };
+
+  // Основание: планка с вырезом под защёлки — как и в обычной схеме.
+  const ledge = (plate.aperture / 2 + plate.housing / 2) / 2;
+  check(!solidIn(baseGrid, center.u, center.v, wSplit - plate.thickness / 2), 'вырез в основании прорезан');
+  check(solidIn(baseGrid, center.u + ledge, center.v, wSplit - plate.thickness / 2), 'планка осталась');
+
+  // Колпачок: полость под корпус свича и трубка с крестом внутри неё.
+  check(
+    !solidIn(capGrid, center.u + fit.cavityWidth / 2 - 1, center.v, wSplit + fit.cavityDepth / 2),
+    'внутри колпачка выбрана полость под свич',
+  );
+  check(
+    solidIn(capGrid, center.u + fit.cavityWidth / 2 + 2, center.v, wSplit + fit.cavityDepth / 2),
+    'стенки колпачка на месте',
+  );
+
+  const s = plate.stem;
+  const socketMid = wSplit + (fit.socketBottom + fit.socketTop) / 2;
+  check(!solidIn(capGrid, center.u, center.v, socketMid), 'гнездо под шток прорезано');
+  check(!solidIn(capGrid, center.u + s.length / 2 - 0.5, center.v, socketMid), 'плечо креста прорезано');
+  check(
+    solidIn(capGrid, center.u + s.width / 2 + 0.4, center.v + s.width / 2 + 0.4, socketMid),
+    'между плечами креста материал — гнездо крестообразное',
+  );
+  check(
+    solidIn(capGrid, center.u + s.tube / 2 - 0.3, center.v, socketMid),
+    'трубка вокруг гнезда на месте',
+  );
+
+  for (const part of result.parts) {
+    writeFileSync(`${OUT_DIR}keycap-${part.id}.stl`, Buffer.from(partToStl(part)));
+  }
+}
+
 async function main(): Promise<void> {
   mkdirSync(OUT_DIR, { recursive: true });
   writeSampleSource();
@@ -579,6 +662,7 @@ async function main(): Promise<void> {
   await verifyThroughChannel();
   await verifyGeometry();
   await verifyPlateMount();
+  await verifyKeycapAssembly();
 
   console.log(
     failures === 0 ? '\n✅ Все проверки пройдены' : `\n❌ Проверок не пройдено: ${failures}`,

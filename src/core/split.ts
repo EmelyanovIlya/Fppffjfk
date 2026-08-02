@@ -22,6 +22,7 @@ import {
   capRecessHeight,
   cavityDepthBelow,
   channelRadius,
+  keycapFit,
   requiredDepthAbove,
   cavityFootprint,
   cavityOuterRadius,
@@ -228,7 +229,7 @@ export async function generateClicker(
     radius: requiredRadius,
     footprintRadius: outerRadius,
     depthBelow: cavityDepthBelow(mechanism, clearance) + options.floor,
-    depthAbove: requiredDepthAbove(mechanism, clearance, options.plungerMode, options.membrane),
+    depthAbove: requiredDepthAbove(mechanism, clearance, options.plungerMode, options.membrane, options.assembly),
     channelRadius: channelRadius(mechanism, clearance),
   });
   const center = {
@@ -247,6 +248,18 @@ export async function generateClicker(
 
   const cavityHeight = cavityDepthBelow(mechanism, clearance);
   const capRecess = capRecessHeight(mechanism, clearance);
+  // Колпачок возможен только для механизмов с посадкой на планку.
+  const keycap =
+    options.assembly === 'keycap' && mechanism.cavity.shape === 'plate'
+      ? keycapFit(mechanism, clearance)
+      : null;
+
+  if (options.assembly === 'keycap' && !keycap) {
+    warnings.push(
+      `«${mechanism.name}» не умеет держать модель на себе — колпачок делается только для ` +
+        'клавиатурного свича. Собрано по обычной схеме, со штифтами.',
+    );
+  }
 
   const availableDepth = depthUnderFootprint(grid, wSplit, center, outerRadius);
   if (availableDepth < cavityHeight + options.floor) {
@@ -267,7 +280,7 @@ export async function generateClicker(
     }
   }
 
-  if (capRecess > 0) {
+  if (capRecess > 0 && !keycap) {
     const availableAbove = solidDepthAbove(grid, auto.index, wSplit);
     if (availableAbove < capRecess + mechanism.minWall) {
       warnings.push(
@@ -342,8 +355,52 @@ export async function generateClicker(
     await nextFrame();
   }
 
-  // Верхняя часть корпуса свича уходит в крышку — освобождаем ей место.
-  if (capRecess > 0) {
+  if (keycap) {
+    // Модель работает колпачком: снизу полость под корпус свича, внутри —
+    // трубка с крестообразным гнездом, которая садится на шток.
+    onProgress('Гнездо колпачка');
+    await nextFrame();
+
+    const s = plateOf(mechanism).stem;
+
+    const clearCut = boxSolid(
+      axis,
+      keycap.cavityWidth,
+      keycap.cavityWidth,
+      keycap.cavityDepth + OVERSHOOT,
+      center.u,
+      center.v,
+      wSplit - OVERSHOOT / 2 + keycap.cavityDepth / 2,
+    );
+    top = csg(top, clearCut, SUBTRACTION);
+    await nextFrame();
+
+    // Трубка свисает с потолка полости до низа гнезда.
+    const tubeLength = keycap.cavityDepth - keycap.socketBottom;
+    const tube = cylinderSolid(
+      axis,
+      s.tube / 2,
+      tubeLength,
+      center.u,
+      center.v,
+      wSplit + keycap.socketBottom + tubeLength / 2,
+      { segments: 32 },
+    );
+    top = csg(top, tube, ADDITION);
+    await nextFrame();
+
+    const armLong = s.length + s.fit;
+    const armShort = s.width + s.fit;
+    const socketHeight = keycap.socketTop - keycap.socketBottom;
+    const socketCenter = wSplit + keycap.socketBottom + socketHeight / 2 - OVERSHOOT / 2;
+    const cross = mergeAll([
+      boxSolid(axis, armLong, armShort, socketHeight + OVERSHOOT, center.u, center.v, socketCenter),
+      boxSolid(axis, armShort, armLong, socketHeight + OVERSHOOT, center.u, center.v, socketCenter),
+    ])!;
+    top = csg(top, cross, SUBTRACTION);
+    await nextFrame();
+  } else if (capRecess > 0) {
+    // Верхняя часть корпуса свича уходит в крышку — освобождаем ей место.
     const recessCut = boxSolid(
       axis,
       footprint.u,
@@ -385,7 +442,7 @@ export async function generateClicker(
   const restGap = options.plungerMode === 'blind' ? mechanism.plunger.engage - socketDepth : 0;
   const plungerRadius = mechanism.plunger.diameter / 2 + clearance;
 
-  if (options.plungerMode === 'blind' && restGap < mechanism.plunger.travel - 0.05) {
+  if (!keycap && options.plungerMode === 'blind' && restGap < mechanism.plunger.travel - 0.05) {
     warnings.push(
       `Толкатель выступает всего на ${mechanism.plunger.engage.toFixed(1)} мм, поэтому крышка ` +
         `сможет пройти ${restGap.toFixed(1)} мм из ${mechanism.plunger.travel.toFixed(1)} мм хода. ` +
@@ -393,21 +450,21 @@ export async function generateClicker(
     );
   }
 
-  if (options.plungerMode === 'blind' && options.pins.enabled && options.pins.height < restGap + 1.5) {
+  if (!keycap && options.plungerMode === 'blind' && options.pins.enabled && options.pins.height < restGap + 1.5) {
     warnings.push(
       `Крышка стоит с зазором ${restGap.toFixed(1)} мм, а штифты всего ${options.pins.height} мм — ` +
         `при нажатии они почти выходят из отверстий. Сделайте штифты выше ${(restGap + 2).toFixed(1)} мм.`,
     );
   }
 
-  if (options.plungerMode === 'blind' && mechanism.cavity.shape === 'plate') {
+  if (!keycap && options.plungerMode === 'blind' && mechanism.cavity.shape === 'plate') {
     warnings.push(
       'Для клавиатурного свича глухой канал — плохой выбор: крышка встанет с заметным зазором, ' +
         'а верх свича будет видно. Переключите канал на «Насквозь» и напечатайте кнопку.',
     );
   }
 
-  if (options.plungerMode !== 'none') {
+  if (options.plungerMode !== 'none' && !keycap) {
     onProgress('Канал толкателя');
     await nextFrame();
 
@@ -447,8 +504,9 @@ export async function generateClicker(
   // ---- Штифты и магниты ----------------------------------------------------
   const pinRadius = options.pins.diameter / 2;
   const magnetRadius = options.magnets.diameter / 2;
-  const featureCount =
-    (options.pins.enabled ? options.pins.count : 0) + (options.magnets.enabled ? options.magnets.count : 0);
+  const featureCount = keycap
+    ? 0
+    : (options.pins.enabled ? options.pins.count : 0) + (options.magnets.enabled ? options.magnets.count : 0);
 
   // Крышка ходит по штифтам, поэтому отверстия глубже ровно на её зазор.
   const holeDepth = options.pins.height + restGap + 0.4;
@@ -587,14 +645,14 @@ export async function generateClicker(
   const parts: GeneratedPart[] = [
     {
       id: 'bottom',
-      name: 'Корпус (нижняя часть с карманом)',
+      name: keycap ? 'Основание со свичем' : 'Корпус (нижняя часть с карманом)',
       fileName: 'clicker-corpus.stl',
       geometry: bottom.geometry,
       volume: computeMeshVolume(bottom.geometry),
     },
     {
       id: 'top',
-      name: 'Крышка (верхняя часть)',
+      name: keycap ? 'Модель-колпачок (садится на шток)' : 'Крышка (верхняя часть)',
       fileName: 'clicker-cap.stl',
       geometry: top.geometry,
       volume: computeMeshVolume(top.geometry),
@@ -603,7 +661,9 @@ export async function generateClicker(
 
   let buttonLift: number | null = null;
 
-  if (options.makeButton && options.plungerMode === 'through') {
+  if (keycap) {
+    // Кнопка не нужна: колпачком работает сама модель.
+  } else if (options.makeButton && options.plungerMode === 'through') {
     const outerThickness = solidDepthAbove(grid, auto.index, wSplit);
     const shaftRadius = Math.max(0.8, plungerRadius - options.pins.fit / 2);
     const headRadius = shaftRadius + 1.8;
@@ -707,7 +767,7 @@ export async function generateClicker(
       inscribedRadius: availableRadius,
       requiredRadius,
       pinRing,
-      restGap,
+      restGap: keycap ? keycap.lift : restGap,
       buttonLift,
       pinPositions: pinSlots,
       magnetPositions: magnetSlots,
